@@ -44,6 +44,7 @@ import { StealthEngine } from "./stealth-engine.mjs";
 import { aceTokenSpace, aceSpaceDistanceFt } from "./geometry-utils.mjs";
 import { InitiativeTools } from "./initiative-tools.mjs";
 import { popupDing } from "./popup-ding.mjs";
+import { awaitDiceSettle } from "./dsn-utils.mjs";
 import { aceToolOrder } from "./token-tools-order.mjs";
 
 /** Footsteps carry this far, edge to edge: the same measure the auras use. */
@@ -760,6 +761,9 @@ export class PerceptionWatch {
     let combatant = combat.combatants.find(c => c.tokenId === tokenDoc.id);
     if (!combatant) {
       try {
+        // dice-ok: a combatant has to exist before it can roll. Nothing is
+        // decided yet at this line; the roll is below and its number is read
+        // only after the dice have landed.
         const [made] = await combat.createEmbeddedDocuments("Combatant", [{
           tokenId: tokenDoc.id,
           sceneId: tokenDoc.parent?.id ?? canvas.scene?.id,
@@ -782,6 +786,11 @@ export class PerceptionWatch {
       // The same call the single-creature buttons use, so Alert and the rest of
       // the feats are respected. One combatant at a time, nobody else.
       await combatant.rollInitiative();
+      /* ⚠️🔴 NOTHING SHOWS THE NUMBER BEFORE ITS DICE LAND (his rule, caught by
+         dice-check 2026-10-05). `rollInitiative` posts a card and resolves while
+         the dice are still in the air, so the line below, the GM chat line and
+         the toast all read an initiative the table had not seen rolled yet. */
+      await awaitDiceSettle(15000);
     } catch (err) {
       console.error(`${LOG} | ${tokenDoc.name}'s initiative roll failed:`, err);
       return null;

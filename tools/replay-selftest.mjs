@@ -45,6 +45,11 @@ const ACCEPT = argv.includes("--accept");
 const SHOW = opt("--show");
 const WORLD = argv.find((a, i) => !a.startsWith("--") && argv[i - 1] !== "--show") ?? "hijinx";
 const ROOT = "D:/FoundryVTT";
+
+/** Is ACE's own humanoid corpse fallback on disk, in either of its two homes? */
+const _deadHumanoidOnDisk = () =>
+  existsSync(`${ROOT}/Data/modules/ace-qol/Assets/Dead/Humanoid/Dead-Humanoid.png`)
+  || existsSync(`${ROOT}/Data/modules/ace-qol/Assets/Dead/Dead-Humanoid.png`);
 const SYSTEM = `${ROOT}/Data/systems/dnd5e`;
 const WORLD_DATA = `${ROOT}/Data/worlds/${WORLD}/data`;
 const LEVELDB = `${ROOT}/Foundry Virtual Tabletop/resources/app/node_modules/classic-level/index.js`;
@@ -4085,9 +4090,17 @@ await quiet(async () => {
         CreatureTriggers._land = keepLand;
       }
       const one = landed[0];
-      check("standing next to his 2024 Salamander burns at the end of its turn: 2d6 fire from its own words on Chudd, the Ogre on its side spared by its choice, Firaxis at 10 feet out of reach, no button (2026-09-19)",
-        landed.length === 1 && one.who.join() === "Chudd" && one.dice === "2d6 fire" && one.trigger === "aura",
-        landed.length ? `${one.item}: ${one.who.join(", ")} ${one.happened}; ${one.dice}` : "nothing landed");
+      /* ⚠️🔴 "OF ITS CHOICE" IS A CHOICE SOMEBODY MAKES (his rule, 2026-10-05).
+         This pinned the Ogre being spared because its disposition matched the
+         Salamander's, which is how a Yuan-ti Anathema stood in a fire aura all
+         night untouched. The aura asks now: one creature in reach burns, and with
+         more than one he is shown the portrait picker and only the ones he marks
+         are spared. There is no picker in this harness, which is "nobody marked",
+         so both creatures in reach burn and Firaxis at ten feet still does not. */
+      const burned = landed.flatMap(l => l.who).sort().join(", ");
+      check("standing next to his 2024 Salamander burns at the end of its turn: 2d6 fire from its own words on everybody in reach, nobody spared unless he marks them, and Firaxis at 10 feet out of reach (2026-10-05)",
+        landed.length === 1 && burned === "Chudd, Ogre" && one.dice === "2d6 fire" && one.trigger === "aura",
+        landed.length ? `${one.item}: ${burned} ${one.happened}; ${one.dice}` : "nothing landed");
     }
     const sal14 = findActor("Salamander", a => !!itemOn(a, "Heated Body"));
     const heated = sal14 ? RetaliationEngine._parse(itemOn(sal14, "Heated Body")) : null;
@@ -6071,9 +6084,13 @@ console.log(`\nA PLAYER'S OWNER DOES NOT SKIP THE CORPSE`);
   const keys = DeathPipeline.deadArtKeysFor(aryel);
   check("and the art ladder for a humanoid named Aryel asks for her own corpse first and a dead humanoid second, which is the file that ships with ACE (2026-09-21)",
     keys[0] === "dead-aryel" && keys.includes("dead-humanoid")
-      && existsSync(`${ROOT}/Data/modules/ace-qol/Assets/Dead/Dead-Humanoid.png`),
-    `${keys.join(" → ")}; Dead-Humanoid.png on disk: `
-      + `${existsSync(`${ROOT}/Data/modules/ace-qol/Assets/Dead/Dead-Humanoid.png`)}`);
+      /* ⚠️ THE SHIPPED FALLBACK MOVED. Assets/Dead was reorganised into type
+         folders on 2026-10-05, so the file is at Assets/Dead/Humanoid/ now. The
+         ladder in death-pipeline.mjs tries both places, and this pin asks the
+         same question: is it in EITHER. Pinning one path is what let the move
+         break the last rung silently in the first place. */
+      && _deadHumanoidOnDisk(),
+    `${keys.join(" → ")}; the shipped Dead-Humanoid.png is on disk: ${_deadHumanoidOnDisk()}`);
 
   // 3. The stamp: a token with its own name is somebody, and a wrong one is corrected.
   const keepActors = game.actors?.get;
@@ -10152,7 +10169,10 @@ console.log(`\nPHASE 5: AREA AND TURN TRIGGERS`);
       // Every die rolls 1, so 2d4 twice is 4, and it is piercing, from the recipe.
       check("3. a creature moving through Spike Growth takes its recipe's damage once for every five feet, through the hit-point door, on a card the card door posted (Phase 5)",
         !err3 && !!hit && total === 4 && (hit.finals ?? []).every(f => f.type === "piercing")
-          && hit.o?.dice === true && !!card && card.data?.flags?.[MOD]?.type === "areaTrigger"
+          // ⚠️ IT IS THE DAMAGE CARD NOW (his rule, 2026-10-05: "Fire Aura posts
+          // through the same damage-card builder as a hit"), so the type on it is
+          // the damage card's own. Nothing in the suite ever read "areaTrigger".
+          && hit.o?.dice === true && !!card && card.data?.flags?.[MOD]?.type === "damageResult"
           && card.o?.dice === true && applied5.length === atA,
         err3 ? `threw: ${err3?.message ?? err3}`
           : `${spike.name}: its words catch on ${(recipe?.recatch ?? []).join(", ") || "nothing"}; `
@@ -10202,7 +10222,15 @@ console.log(`\nPHASE 5: AREA AND TURN TRIGGERS`);
     {
       const src = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/road/run.mjs`, "utf8").replace(/\/\/.*$/gm, "");
       const raw = /ChatMessage\.create\s*\(/.test(src);
-      const doors = /CardDoor\.post\(/.test(src) && /HpDoor\.damage\(/.test(src) && /ConditionDoor\.apply\(/.test(src);
+      /* ⚠️ THE CARD GOES THROUGH THE DOOR ONE LEVEL DOWN. The road handed its own
+         markup to CardDoor until 2026-10-05; it hands the damage to
+         DamageCardRenderer.postDamageCard now, which is the one builder a hit
+         uses, and THAT posts through the card door. So the rule is unchanged and
+         this reads the renderer for it rather than expecting the call here. */
+      const renderer = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/damage-card-renderer.mjs`, "utf8");
+      const cardDoor = /CardDoor\.post\(/.test(src)
+        || (/postDamageCard\(/.test(src) && /CardDoor\.post\(/.test(renderer));
+      const doors = cardDoor && /HpDoor\.damage\(/.test(src) && /ConditionDoor\.apply\(/.test(src);
       check("5. every card a trigger posts goes through the card door, and every landing through its own door (Phase 5)",
         !raw && doors && doorCalls.card.length > 0,
         `run.mjs: raw chat cards ${raw ? "left" : "none"}; it lands through the card, hit-point and condition doors: ${doors ? "yes" : "no"}; `

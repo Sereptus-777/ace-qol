@@ -143,6 +143,27 @@ export async function revokeVorpalLock(actorId, tokenId, sceneId) {
 }
 
 export class DeathPipeline {
+  static _artChecks = new Map();
+
+  /**
+   * Is that file really on the server?
+   *
+   * ⚠️ A PATH IS NOT PROOF OF A FILE. The same lesson the fire engine learned on
+   * 2026-10-05, and the reason this one is here: a hard-coded asset path survives
+   * a folder being reorganised and silently stops pointing at anything.
+   */
+  static async _fileThere(path) {
+    if (DeathPipeline._artChecks.has(path)) return DeathPipeline._artChecks.get(path);
+    const check = (async () => {
+      try {
+        const r = await fetch(path, { method: "HEAD" });
+        return r.ok;
+      } catch (_) { return false; }
+    })();
+    DeathPipeline._artChecks.set(path, check);
+    return check;
+  }
+
 
   constructor() {
     /** @type {Map<string, string>}  normalized file stem → full file path */
@@ -705,9 +726,30 @@ export class DeathPipeline {
         // for any humanoid-shaped creature that doesn't have a more specific
         // dead-art file. Better than the token's own image because at least
         // we KNOW it's a corpse pose.
-        const humanoidFallback = `modules/${MODULE_ID}/Assets/Dead/Dead-Humanoid.png`;
-        deadArtPath = humanoidFallback;
-        fallbackUsed = "dead-humanoid-fallback";
+        /* ⚠️🔴 THE PATH MOVED AND NOTHING NOTICED (caught by the replay, 2026-10-05).
+           Assets/Dead was reorganised into type folders, so this file is now at
+           Assets/Dead/Humanoid/Dead-Humanoid.png, and the one hard-coded path
+           here pointed at a file that is not there any more: the last rung of the
+           ladder was a corpse with no picture. Both places are tried, the new one
+           first, and the one it used is logged. */
+        const humanoidFallbacks = [
+          `modules/${MODULE_ID}/Assets/Dead/Humanoid/Dead-Humanoid.png`,
+          `modules/${MODULE_ID}/Assets/Dead/Dead-Humanoid.png`,
+        ];
+        let picked = null;
+        for (const candidate of humanoidFallbacks) {
+          if (await DeathPipeline._fileThere(candidate)) { picked = candidate; break; }
+        }
+        if (picked) {
+          deadArtPath = picked;
+          fallbackUsed = "dead-humanoid-fallback";
+          console.log(`${MODULE_ID} | corpse art: no picture for ${tokenDoc.name}, so the shipped `
+            + `humanoid fallback is used (${picked}).`);
+        } else {
+          console.warn(`${MODULE_ID} | corpse art: the shipped humanoid fallback is in neither `
+            + `place (${humanoidFallbacks.join(", ")}), so this falls through to the token's own `
+            + `picture.`);
+        }
       }
       if (!deadArtPath) {
         // Fallback 2: the actor's own token image (shows the creature as-is)

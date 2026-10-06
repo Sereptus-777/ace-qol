@@ -228,7 +228,10 @@ console.log("\nTHE GRAPPLE ESCAPE ROLLS ITSELF");
   rolled = []; posted = []; nextTotal = 9; eff.deleted = false;
   await BreakFreeEngine._autoAttempt(victimActor, null, eff, eff.flags["ace-qol"].breakFree, 6, 0);
   check("a fail leaves the Grappled on", eff.deleted === false, "still held");
-  check("and the whisper says so", /holds/.test(posted[0]?.content ?? ""),
+  /* ⚠️ THE WORDS ARE HIS NOW. A failed escape said "<the net> holds"; he rebuilt
+     this card on 2026-10-05 and a fail reads "The hold stays." One builder draws
+     it (escape-card.mjs), so this pin reads what that builder writes. */
+  check("and the whisper says the hold stays", /The hold stays/.test(posted[0]?.content ?? ""),
     "the grapple holds");
 }
 
@@ -324,7 +327,7 @@ console.log("\nA PASS TAKES OFF EVERYTHING THAT GRAB PUT ON");
   await BFE2._autoAttempt(escher2, null, grappled2, meta2, 9, 0);
   check("a fail leaves both of them on", escher2.effects.contents.length === 2,
     `${escher2.effects.contents.length} still held`);
-  check("and the whisper says the grapple holds", /holds/.test(posted[0]?.content ?? ""), "");
+  check("and the whisper says the hold stays", /The hold stays/.test(posted[0]?.content ?? ""), "");
 }
 
 // THE TABLE PATH IS THE ONE HIS TABLE WALKS.
