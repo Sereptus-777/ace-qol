@@ -329,12 +329,22 @@ export class DamageEngine {
         const el = html?.[0] ?? html;
         if (!el) return;
 
-      // ── Hide GM-only sections for non-GM users ──
-      // Note: the CLEAVE button row (`.ace-qol-dmg-cleave-row`) sits OUTSIDE
-      // these hidden sections so players can see + click it.
+      /* ── The GM half of this card, and ONLY the GM half ──────────────────
+         ⚠️🔴 THE TABLE SEES THE DAMAGE (his rule, 2026-10-06: "It sees the damage
+         that was rolled, with its type: 5 fire, 47 fire, 9 poison, 19 necrotic,
+         15 radiant... It does not see a creature's hit points. It does not see
+         Apply, or the quarter, half, 1, and 2 buttons.").
+
+         This hid `.ace-qol-dmg-targets` outright, which is the whole block: the
+         name of who was hit, the portrait, and every damage pill. So a player
+         watching a dragon breathe on the party saw a card that told them nothing
+         at all, and the only way to learn the number was to ask him.
+
+         The hit points and the buttons are not in that block, they are in
+         `.ace-qol-dmg-gm-controls` INSIDE each row, which is still hidden here.
+         So one card, two halves, and the half that goes is only the half he said.
+         The CLEAVE row sits outside both and stays clickable for players. */
       if (!game.user.isGM) {
-        const targets = el.querySelector?.(".ace-qol-dmg-targets");
-        if (targets) targets.style.display = "none";
         const gmControls = el.querySelectorAll?.(".ace-qol-dmg-gm-controls");
         for (const ctrl of (gmControls ?? [])) {
           ctrl.style.display = "none";
@@ -370,14 +380,19 @@ export class DamageEngine {
         }
       }
 
-      // ── Player status summary ──
-      DamageCardRenderer.injectPlayerStatus(el, flags);
+      /* ── Player status summary ──
+         ⚠️ IT IS THE SAME DAMAGE TWICE NOW. This block existed because a player
+         could not see the target rows at all, so after APPLY it told them what had
+         landed. From 2026-10-06 the rows themselves are public - his rule: the
+         table sees the damage that was rolled, with its type - so injecting this
+         as well prints every number a second time on every applied card. The GM
+         keeps it, because his rows carry the hit points and this is the one place
+         the summary reads cleanly for him. */
+      if (game.user?.isGM) DamageCardRenderer.injectPlayerStatus(el, flags);
 
       // ── Apply button ──
       const applyBtn = el.querySelector?.("[data-action='aceQolApplyDamage']");
       const undoBtn = el.querySelector?.("[data-action='aceQolUndoDamage']");
-
-      const anyPerTypeApplied = Object.values(flags?.appliedComps ?? {}).some(arr => arr?.length > 0);
 
       if (applyBtn && !applyBtn.dataset.wired) {
         applyBtn.dataset.wired = "1";
@@ -396,40 +411,25 @@ export class DamageEngine {
         }
       }
 
+      /* ⚠️🔴 THE BUTTON DOES NOT DRESS ITSELF (his rule, 2026-10-06: "the hit
+         points, the look of each pill, and the undo button all match that
+         record. They do not keep their own copies.").
+
+         This block decided the button's state at WIRE time, once, from the flags
+         as they were when the card drew: disabled and faded at 0.35 opacity when
+         nothing was applied, lit otherwise, and relabelled from whichever types
+         happened to be on. So it was stale the moment any pill was pressed, and
+         after UNDO ALL it stayed lit and claimed there was something to undo.
+
+         `syncSwitches` is the only thing that paints it now, from the one record,
+         on every render and after every press. And idle is not grey: a faded,
+         disabled UNDO ALL reads as broken, so it stays lit and simply has nothing
+         to put back. Pressing it then is a no-op that says so. */
       if (undoBtn && !undoBtn.dataset.wired) {
         undoBtn.dataset.wired = "1";
-        if (!flags.applied && !anyPerTypeApplied) {
-          undoBtn.disabled = true;
-          undoBtn.style.opacity = "0.35";
-          undoBtn.title = "Apply damage first";
-        } else {
-          undoBtn.disabled = false;
-          undoBtn.style.opacity = "";
-          undoBtn.title = "Undo all applied damage and reset card";
-
-          const appliedCompsMap = flags?.appliedComps ?? {};
-          const results = flags?.damageResults ?? [];
-          const appliedTypeNames = new Set();
-          for (const [tid, indices] of Object.entries(appliedCompsMap)) {
-            const entry = results.find(r => r.tokenDocId === tid);
-            if (!entry?.components) continue;
-            for (const idx of (indices ?? [])) {
-              const comp = entry.components[idx];
-              if (comp?.type) appliedTypeNames.add(comp.type.toUpperCase());
-            }
-          }
-          if (flags.applied) {
-            undoBtn.innerHTML = '<i class="fas fa-undo"></i> UNDO ALL';
-          } else if (appliedTypeNames.size === 1) {
-            undoBtn.innerHTML = `<i class="fas fa-undo"></i> UNDO ${[...appliedTypeNames][0]}`;
-          } else {
-            undoBtn.innerHTML = '<i class="fas fa-undo"></i> UNDO ALL';
-          }
-
-          undoBtn.addEventListener("click", async () => {
-            await DamageApplicator.undoDamage(message);
-          });
-        }
+        undoBtn.addEventListener("click", async () => {
+          await DamageApplicator.undoDamage(message);
+        });
       }
 
       // ── Per-row override buttons ──

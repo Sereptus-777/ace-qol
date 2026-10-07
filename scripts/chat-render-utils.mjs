@@ -184,14 +184,110 @@ export function registerForeignChatCardHandler(handler, label = "third-party car
  *
  * @param {string|null} rollers  one actor id, or several separated by spaces
  */
-export function maySeeDC(rollers) {
+/**
+ * Is this creature one of the party?
+ *
+ * ⚠️ OWNED BY A PLAYER, WHICH IS THE ONLY HONEST TEST. Not "is it a character"
+ * and not a folder name: a sidekick, a familiar and a player's own summon are all
+ * the party's, and a creature nobody at the table owns is his. Used wherever a
+ * number is the party's to read out loud rather than the GM's to keep.
+ */
+export function isPartyActor(actorId) {
+    try {
+        const actor = actorId ? game.actors?.get(actorId) : null;
+        if (!actor) return false;
+        return (game.users ?? []).some(u => !u.isGM && actor.testUserPermission(u, "OWNER"));
+    } catch (_) {
+        return false;
+    }
+}
+
+/**
+ * Whether this screen may read a DC being rolled against by `rollers`.
+ *
+ * @param {string|null} rollers  one actor id, or several separated by spaces
+ * @param {string|null} whose    the creature the DC belongs to, when it is known
+ */
+export function maySeeDC(rollers, whose = null) {
     try {
         if (game.user?.isGM) return true;
+        /* ⚠️ A PARTY MEMBER'S OWN DC IS THE TABLE'S (his rule, 2026-10-06: "If one
+           of the party cast it, the table also sees his formula and his DC.
+           Firaxis casts Fireball: 8d6 fire, DC 13..."). The roller test below is
+           about a number somebody is rolling AGAINST; this is about a number one
+           of them set, which the whole table is entitled to hear. */
+        if (whose && isPartyActor(whose)) return true;
         const ids = String(rollers ?? "").split(/\s+/).filter(Boolean);
         if (!ids.length) return false;          // nobody is rolling it yet
         return ids.some(id => !!game.actors?.get(id)?.isOwner);
     } catch (_) {
         return false;                           // unreadable: not this screen's
+    }
+}
+
+/**
+ * The wrapper for a bonus that belongs to one creature: a to-hit bonus, a check
+ * bonus, the arithmetic behind a roll.
+ *
+ * His rule, 2026-10-06: "A creature's attack: they see the die, Hit or Miss, and
+ * the damage if it hit. They do not see the bonus" — and the other way for the
+ * party: "A character saving against a creature: they see his die, his own bonus,
+ * Failed or Saved".
+ *
+ * ⚠️ WHOSE, NOT WHO IS LOOKING. A party member's bonus is public to the whole
+ * table, not only to the player who owns him, because it is read out at the table
+ * anyway. A creature's is the GM's alone.
+ */
+export function bonusSpan(text, whose = null, extraClass = "") {
+    const esc = (v) => String(v ?? "")
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    return `<span class="ace-qol-bonus${extraClass ? ` ${extraClass}` : ""}"`
+        + `${whose ? ` data-bonus-actor="${esc(whose)}"` : ""}>${text}</span>`;
+}
+
+/** Reveal, on THIS screen, the bonuses this viewer is entitled to. */
+export function revealOwnBonuses(root, message = null) {
+    try {
+        /* ⚠️🔴 A MODIFIER CHIP IS A BONUS (his rule, 2026-10-06: "On the
+           player's half of a damage card, hide ace-qol-mod-labeled. That is the
+           +4 STR... It does not see a creature's strength, or any other bonus.
+           The GM half still shows the +4 STR. Same rule for every creature bonus
+           on every card, not only this fist.").
+
+           `.ace-qol-mod-labeled` is the chip the whole suite paints a named
+           modifier with - the ability, proficiency, a magic weapon, a named buff -
+           on the damage card, the attack card and the merge card alike. Reading it
+           by its own class is what makes this one rule rather than a wrapper that
+           has to be remembered at every emission site; the next card that paints a
+           modifier gets the rule for free, and a site that forgets it leaks
+           nothing because the class ships hidden.
+
+           Whose bonus it is comes from the chip if it says, and otherwise from the
+           creature whose roll the card is about. A party member's own chip stays
+           public, because his numbers are read out at the table anyway. */
+        const ofCard = message?.flags?.[MODULE_ID]?.actorId ?? null;
+        const decide = (el, id) => {
+            const mine = game.user?.isGM || isPartyActor(id);
+            if (mine) el.dataset.aceBonus = "show";
+            else delete el.dataset.aceBonus;
+        };
+        for (const el of (root?.querySelectorAll?.(".ace-qol-bonus") ?? [])) {
+            decide(el, el.dataset?.bonusActor ?? null);
+        }
+        for (const el of (root?.querySelectorAll?.(".ace-qol-mod-labeled") ?? [])) {
+            /* Whose it is, in order: the chip itself, then the wrapper it sits in
+               (the attack card puts its whole arithmetic inside one that names the
+               attacker), then the creature whose roll the card is about. Without
+               the middle step a party member's own chips would be hidden from his
+               own table on the one card that already knew the answer. */
+            const owner = el.dataset?.bonusActor
+                ?? el.closest?.(".ace-qol-bonus[data-bonus-actor]")?.dataset?.bonusActor
+                ?? ofCard;
+            decide(el, owner);
+        }
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not decide which bonuses this screen may see, so none `
+            + `of them are shown here:`, err);
     }
 }
 
@@ -202,12 +298,13 @@ export function maySeeDC(rollers) {
  * @param {string|string[]|null} rollers  the creature(s) rolling against it
  * @param {string} [extraClass]       any styling class the card already used
  */
-export function dcSpan(text, rollers = null, extraClass = "") {
+export function dcSpan(text, rollers = null, extraClass = "", { whose = null } = {}) {
     const esc = (v) => String(v ?? "")
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     const ids = (Array.isArray(rollers) ? rollers : [rollers]).filter(Boolean).join(" ");
     return `<span class="ace-qol-dc${extraClass ? ` ${extraClass}` : ""}"`
-        + `${ids ? ` data-dc-roller="${esc(ids)}"` : ""}>${esc(text)}</span>`;
+        + `${ids ? ` data-dc-roller="${esc(ids)}"` : ""}`
+        + `${whose ? ` data-dc-owner="${esc(whose)}"` : ""}>${esc(text)}</span>`;
 }
 
 /**
@@ -219,13 +316,13 @@ export function dcSpan(text, rollers = null, extraClass = "") {
  */
 export function revealOwnDCs(root) {
     let shown = 0, hidden = 0;
-    const decide = (el, rollers) => {
-        if (maySeeDC(rollers)) { el.dataset.aceDc = "show"; shown++; }
+    const decide = (el, rollers, whose = null) => {
+        if (maySeeDC(rollers, whose)) { el.dataset.aceDc = "show"; shown++; }
         else { delete el.dataset.aceDc; hidden++; }
     };
     try {
         for (const el of (root?.querySelectorAll?.(".ace-qol-dc") ?? [])) {
-            decide(el, el.dataset?.dcRoller ?? null);
+            decide(el, el.dataset?.dcRoller ?? null, el.dataset?.dcOwner ?? null);
         }
         for (const el of (root?.querySelectorAll?.(".ace-qol-save-dc") ?? [])) {
             decide(el, null);
@@ -364,12 +461,46 @@ export function skinSystemCard(message, el) {
  * every screen. No speaker strip (§ 13.1), and a DC only on a roll this screen
  * is making (§ 13.2).
  */
+/**
+ * The GM half of an ACE card, revealed on the GM's screen and nowhere else.
+ *
+ * ⚠️🔴 ONE CARD, TWO HALVES (his rule, 2026-10-06: "Every card that reaches a
+ * player follows one rule. The hidden half is the gm-only part of the same black
+ * card. Do not whisper the card away, and do not leave the hidden numbers in the
+ * public half.").
+ *
+ * `.ace-qol-gm-only` ships hidden by the stylesheet and is turned on here by
+ * stamping `data-ace-gm`. That stamp used to live inside the SAVE engine's own
+ * render handler, so it reached save cards and nothing else: every other card in
+ * the suite either leaked its GM half or whispered itself away from the table.
+ * It is in the one pass now, beside the DC and the AC, which is the same
+ * correction those two already carry in their own comments.
+ *
+ * @returns {{shown:number}} how many blocks this screen was allowed to see
+ */
+export function revealGmHalf(root) {
+    let shown = 0;
+    try {
+        if (!game.user?.isGM) return { shown: 0 };
+        for (const el of (root?.querySelectorAll?.(".ace-qol-gm-only") ?? [])) {
+            el.setAttribute("data-ace-gm", "true");
+            shown++;
+        }
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not reveal the GM half of a card, so it stays hidden `
+            + `on this screen:`, err);
+    }
+    return { shown };
+}
+
 export function registerAceChrome() {
     registerChatCardHandler((message, el) => {
         stampAceCard(message, el);
         skinSystemCard(message, el);   // after the stamp: an ACE card is never skinned
         revealOwnDCs(el);
         revealOwnACs(el);
+        revealOwnBonuses(el, message);
+        revealGmHalf(el);
         takeLogToNewCard(message, el);
     }, "ACE card chrome", { sweepAll: true });
     registerAceCardScroll();

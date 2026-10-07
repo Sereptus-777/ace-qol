@@ -101,9 +101,18 @@ export function readSpaceEffects(token, { announceGaps = true } = {}) {
     for (const region of all) {
       let inside = false;
       try {
-        inside = region.object?.testPoint?.(token.center, token.document?.elevation ?? 0)
-          ?? region.testPoint?.({ ...token.center, elevation: token.document?.elevation ?? 0 })
-          ?? false;
+        /* ⚠️🔴 `??` DOES NOT FALL THROUGH ON false (found 2026-10-05, same cause as
+           the fire engine's missing flames). The deprecated `Region#testPoint`
+           on the placeable came first here, and its shim hands both arguments to
+           `RegionDocument#testPoint(point)`, which takes ONE elevated point: the
+           elevation is dropped, the document compares its floor against undefined,
+           and the answer is false. false is not nullish, so the correct call
+           behind the `??` was never reached and this profile reported NO region on
+           any creature, ever. The document is asked directly now. */
+        inside = !!region.testPoint?.({
+          ...token.center,
+          elevation: token.document?.elevation ?? 0,
+        });
       } catch (_) { continue; }
       if (!inside) continue;
 

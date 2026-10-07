@@ -844,8 +844,6 @@ export class PostHitSaves {
       <div class="ace-qol-save-card ace-qol-save-shell ace-qol-posthit-save" data-ace-save-shell="1">
         ${_SEask.castLineHtml(actor, item?.name ?? "its attack", _askNames,
             { isSpell: item?.type === "spell", fallbackImg: item?.img })}
-        ${_SEask.saveQuietLineHtml(targetData, { saveAbility: save?.ability ?? null,
-            saveDC: save?.dc ?? null, abilityLabel })}
         <div class="ace-qol-save-targets">
           ${targetRows}
         </div>
@@ -1703,8 +1701,6 @@ export class PostHitSaves {
       <div class="ace-qol-save-results-card ace-qol-save-shell ace-qol-posthit-results" data-ace-save-shell="1">
         ${_SE.castLineHtml(actor, item?.name ?? "its attack", _tgtNames,
             { isSpell: item?.type === "spell", fallbackImg: item?.img })}
-        ${_SE.saveQuietLineHtml(results, { saveAbility: save?.ability ?? null, saveDC: save?.dc ?? null,
-            abilityLabel })}
         <div class="ace-qol-save-results">
           ${rows}
         </div>

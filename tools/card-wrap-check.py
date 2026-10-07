@@ -115,7 +115,13 @@ def scan(css_path):
         if OPT_OUT.search(body) or OPT_OUT.search(before):
             exempt += 1
             continue
-        if re.search(r"flex-wrap\s*:", body):
+        # ⚠️🔴 `flex-wrap: nowrap` IS THE BUG, NOT THE CURE (found 2026-10-05).
+        # This asked only whether the rule MENTIONED `flex-wrap`, so a row that
+        # said `flex-wrap: nowrap` out loud passed the check that exists to catch
+        # exactly that. The most direct form of the thing this tool guards against
+        # was the one form it could not see. Only a real wrap counts now, and a row
+        # that genuinely must not wrap says `no-wrap-ok: <reason>` like any other.
+        if re.search(r"flex-wrap\s*:\s*(wrap|wrap-reverse)\b", body, re.I):
             continue
         offenders.append((line, sel.replace("\n", " ").strip()))
 

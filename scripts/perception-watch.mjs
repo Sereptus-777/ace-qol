@@ -852,7 +852,12 @@ export class PerceptionWatch {
     try {
       const { CardDoor } = await import("./road/doors.mjs");
       await CardDoor.post({
-        content: `<div class="ace-perceived-note">${html}</div>`,
+        // ⚠️ THE BLACK ACE CARD (his rule, 2026-10-06: "Every card you post uses
+        // that black ACE card. A pale line on the default chat background is not
+        // a card."). This line had colour and no card behind it, so on a whisper
+        // it was pale text on Foundry's parchment. It stays GM-only - what a
+        // creature noticed is not the table's to read - but it is a card now.
+        content: `<div class="ace-qol-card ace-perceived-note">${html}</div>`,
         whisper: (game.users ?? []).filter(u => u.isGM).map(u => u.id),
         flags: { [MODULE_ID]: { type: "perceptionJoined" } },
       }, { dice: false });

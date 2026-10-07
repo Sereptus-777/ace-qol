@@ -46,7 +46,7 @@ import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 // sits at the centre of.
 import { gateOff } from "./why-not.mjs";
 // § 13.3: a monster's AC is not on a card; the wrapper says whose it is.
-import { acSpan } from "./chat-render-utils.mjs";
+import { acSpan, bonusSpan } from "./chat-render-utils.mjs";
 
 // ─── Profile access for this pipeline (2026-07-28, re-cut 2026-08-25) ────────
 //
@@ -1735,7 +1735,20 @@ export class AttackPipeline {
       formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label${_named}">${label}</span></span>`);
     }
 
-    const formulaStr = formulaParts.join(" ");
+    /* ⚠️🔴 THE DIE IS THE TABLE'S, THE BONUS IS NOT (his rule, 2026-10-06: "A
+       creature's attack: they see the die, Hit or Miss, and the damage if it hit.
+       They do not see the bonus, and they do not see the armor class.").
+
+       The first part is the d20 face and stays public on every card. Everything
+       after it is the arithmetic, and so is the total: a player who can see a 14
+       on the die and a 21 beside it has been told the bonus is +7 just as plainly
+       as if the chip said so. Both go behind the one wrapper, which shows them to
+       the GM always and to the whole table when the attacker is one of the party,
+       because his own numbers are read out loud anyway. */
+    const _atkWhose = actor?.id ?? null;
+    const _die = formulaParts[0] ?? "";
+    const _maths = formulaParts.slice(1).join(" ");
+    const formulaStr = _die + (_maths ? ` ${bonusSpan(_maths, _atkWhose)}` : "");
 
     // ── Roll mode indicator ──
     const rollModeLabel = r0.finalRollMode === "advantage" ? '<span class="ace-qol-roll-mode ace-qol-adv">ADV</span>'
@@ -1844,10 +1857,10 @@ export class AttackPipeline {
         <div class="ace-qol-atk-roll">
           <span class="ace-qol-atk-formula">
             ${formulaStr}
-            <span class="ace-qol-atk-result-chip">
-              <span class="ace-qol-atk-equals">=</span>
-              <span class="ace-qol-atk-total ${resultClass}">${rollTotal}</span>
-            </span>
+            ${bonusSpan(`<span class="ace-qol-atk-result-chip">`
+              + `<span class="ace-qol-atk-equals">=</span>`
+              + `<span class="ace-qol-atk-total ${resultClass}">${rollTotal}</span>`
+              + `</span>`, _atkWhose)}
           </span>
         </div>
         <div class="ace-qol-atk-results">

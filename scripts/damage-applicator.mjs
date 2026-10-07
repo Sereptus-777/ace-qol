@@ -702,7 +702,10 @@ export class DamageApplicator {
       await message.update({
         [`flags.${MODULE_ID}.appliedComps.${entry.tokenDocId}`]: allIndices,
         [`flags.${MODULE_ID}.perTypeApplied.${entry.tokenDocId}`]: prevPerType + damageToApply,
-        // The true hit-point movement, which is what UNDO gives back.
+        /* ⚠️ KEPT FOR THE CARD'S OTHER READERS ONLY. UNDO ALL no longer reads
+           either of these: it adds back what each switch recorded taking, in
+           `perCompApplied` just above, so a card cannot have a total that
+           disagrees with its own pills (2026-10-06). */
         [`flags.${MODULE_ID}.hpDelta.${entry.tokenDocId}`]: _prevDelta + _realDelta,
         ...perCompUpdate,
       });
@@ -743,6 +746,56 @@ export class DamageApplicator {
   /**
    * Undo damage — restore HP to pre-damage values.
    */
+  /**
+   * Make the card show what the record says, and nothing else.
+   *
+   * His rule, 2026-10-06: "The pills and UNDO ALL read one record: which types
+   * are on. After every press, the hit points, the look of each pill, and the
+   * undo button all match that record. They do not keep their own copies."
+   *
+   * ⚠️ THE PILLS AND THE BUTTON ARE A VIEW OF THE RECORD, NOT A SECOND COPY OF
+   * IT. Each press used to set its own class and the undo button was dressed in
+   * one place and undressed in another, so a press that changed the record and a
+   * repaint that did not run left the card telling him something untrue. This is
+   * the only thing that paints either of them.
+   *
+   * ⚠️ IDLE IS NOT GREY (his rule: "When none are on, the button is idle: it is
+   * not gray, and it does not still say it is undoing something"). A disabled,
+   * faded UNDO ALL reads as broken. It stays lit and simply has nothing to do.
+   */
+  static syncSwitches(message, root) {
+    try {
+      if (!root?.querySelectorAll) return 0;
+      const onFor = message.flags?.[MODULE_ID]?.appliedComps ?? {};
+      let anyOn = 0;
+
+      for (const pill of root.querySelectorAll("[data-action='aceQolApplyType']")) {
+        const tid = pill.closest(".ace-qol-dmg-target-row")?.dataset?.tokenDocId;
+        const idx = parseInt(pill.dataset.compIndex);
+        const on = (onFor[tid] ?? []).includes(idx);
+        pill.classList.toggle("ace-qol-dmg-type-applied", on);
+        if (on) anyOn++;
+      }
+
+      const undoBtn = root.querySelector("[data-action='aceQolUndoDamage']");
+      if (undoBtn) {
+        undoBtn.disabled = false;
+        undoBtn.style.opacity = "";
+        undoBtn.classList.toggle("ace-qol-btn-has-undo", anyOn > 0);
+        // ⚠️ THE WORDS NEVER CHANGE (his rule: "UNDO ALL stays the words UNDO ALL").
+        undoBtn.innerHTML = '<i class="fas fa-undo"></i> UNDO ALL';
+        undoBtn.title = anyOn
+          ? `Put back ${anyOn} damage type${anyOn === 1 ? "" : "s"}`
+          : "Nothing on this card is applied";
+      }
+      return anyOn;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not make the damage card match its own record, so a `
+        + `pill may be showing the wrong state:`, err);
+      return 0;
+    }
+  }
+
   static async undoDamage(message) {
     // ── v0.4.22 GM-only guard ──
     if (!game.user.isGM) {
@@ -753,93 +806,132 @@ export class DamageApplicator {
     const data = message.getFlag(MODULE_ID, "damageResults");
     if (!data?.length) return;
 
-    // ── 🔴 UNDO GIVES BACK WHAT IT TOOK (audit fix, 2026-08-07) ────────────
-    // This used to set hit points back to `entry.currentHP` — the snapshot taken
-    // when the CARD WAS CREATED. An absolute restore, not a relative one, so
-    // anything that touched the creature in between was silently erased:
-    //
-    //   goblin at 30 → apply 10 (now 20) → steps in a trap for 5 (now 15)
-    //   → click UNDO on the old card → goblin goes back to 30. Trap damage gone.
-    //
-    // Same for two damage cards in flight, and for a card where only ONE damage
-    // type was applied (undo handed back the full pre-card total regardless).
-    //
-    // `hpDelta` records the TRUE hit-point movement at apply time — after temp
-    // HP absorbed its share and after any listener reduction — so healing it
-    // back is exact. The per-type undo directly below already worked this way;
-    // this brings UNDO ALL into line with it.
-    const _flags     = message.flags?.[MODULE_ID] ?? {};
-    const _hpDeltas  = _flags.hpDelta ?? {};
-    const _perType   = _flags.perTypeApplied ?? {};
+    /* ⚠️ NOTHING ON MEANS NOTHING TO DO, AND IT SAYS SO (his rule, 2026-10-06: "A
+       pill that was turned off by pressing it leaves the button idle too."). The
+       button is lit rather than greyed, so it can be pressed with every switch
+       off; that is not an error and it must not heal anybody. */
+    const _anyOn = Object.values(message.flags?.[MODULE_ID]?.appliedComps ?? {})
+      .some(list => (list ?? []).length > 0);
+    if (!_anyOn) {
+      console.log(`${MODULE_ID} | UNDO ALL: no damage type on this card is applied, so there is `
+        + `nothing to put back.`);
+      return;
+    }
+
+    /* ── UNDO ALL PUTS BACK EVERY SWITCH THAT IS ON, EACH ONCE ───────────────
+       His rule, 2026-10-06: "It adds back every type that is currently applied,
+       each amount once, and returns every one of those pills to ready."
+
+       ⚠️🔴 IT USED TO GIVE BACK A RUNNING TOTAL, NOT THE TYPES. The amount came
+       from `hpDelta`, a per-creature tally kept in step by hand on every press,
+       with `perTypeApplied` as a fallback for older cards. Two more numbers that
+       could drift from the switches they claimed to describe, and when they did
+       the only symptom was a creature's hit points quietly ending up wrong.
+
+       It reads the switches now. `perCompApplied` records what each one actually
+       took when it was pressed - the pill's own amount, or the reduced amount if
+       APPLY ALL landed it at a quarter or a half - so the sum is exact, a type
+       that was never applied contributes nothing, and the arithmetic is addition
+       rather than a ledger. */
+    const _flags    = message.flags?.[MODULE_ID] ?? {};
+    const _onComps  = _flags.appliedComps ?? {};
+    const _tookEach = _flags.perCompApplied ?? {};
+    const _perType  = _flags.perTypeApplied ?? {};
 
     let undoneCount = 0;
     for (const entry of data) {
       const actor = DamageApplicator.resolveTargetActor(entry);
       if (!actor) {
-        console.warn(`${MODULE_ID} | Could not find actor for undo on token ${entry.tokenDocId}`);
+        console.warn(`${MODULE_ID} | no creature could be found for token ${entry.tokenDocId}, so `
+          + `nothing was put back for ${entry.name}.`);
         continue;
       }
 
-      // Preference order: the true movement → the nominal applied total (cards
-      // created before this fix) → nothing at all. A card that was never applied
-      // has nothing to undo, and must NOT be treated as "restore to snapshot".
-      let giveBack = Number(_hpDeltas[entry.tokenDocId]);
-      let source   = "true hit-point movement";
-      if (!Number.isFinite(giveBack)) {
-        giveBack = Number(_perType[entry.tokenDocId]);
-        source   = "applied total (card predates the hpDelta fix)";
+      const on = _onComps[entry.tokenDocId] ?? [];
+      const took = _tookEach[entry.tokenDocId] ?? {};
+      let giveBack = 0;
+      const named = [];
+      for (const idx of on) {
+        const amount = Number(took[idx]);
+        if (!Number.isFinite(amount) || amount <= 0) continue;
+        giveBack += amount;
+        named.push(`${amount} ${entry.components?.[idx]?.type ?? "damage"}`);
       }
-      if (!Number.isFinite(giveBack) || giveBack <= 0) {
-        console.log(`${MODULE_ID} | UNDO: nothing was applied to ${entry.name} on this card — leaving its hit points alone.`);
+
+      /* ⚠️ A CARD WRITTEN BEFORE THE SWITCHES HAS NO PER-TYPE RECORD, and its
+         running total is the only thing it ever kept. Used only when there is no
+         switch record at all, and it says which it used, because "it gave back
+         the wrong amount" and "it gave back an old card's amount" must never read
+         the same in the console. */
+      let source = "the switches that are on";
+      if (!giveBack && !on.length) {
+        giveBack = Number(_perType[entry.tokenDocId]) || 0;
+        source = "the running total on a card older than the switches";
+      }
+
+      if (!(giveBack > 0)) {
+        console.log(`${MODULE_ID} | UNDO ALL: nothing on this card is applied to ${entry.name}, `
+          + `so its hit points are left alone.`);
         continue;
       }
 
       const { currentHP, newHP } = await DamageApplicator.applyHPHeal(actor, giveBack, {
-        label: `UNDO ${entry.name}`,
+        label: `UNDO ALL ${entry.name}`,
         correction: true,   // rewinding the ledger, not healing — nothing may block it
       });
-      console.log(`${MODULE_ID} | UNDO on ${actor.name}: gave back ${giveBack} (${source}) — ${currentHP} → ${newHP}`);
+      console.log(`${MODULE_ID} | UNDO ALL on ${entry.name}: ${giveBack} back`
+        + `${named.length ? ` (${named.join(" + ")})` : ""}, from ${source}. `
+        + `HP ${currentHP} to ${newHP}.`);
       undoneCount++;
     }
 
-    // Clear ALL tracking flags so the card returns to completely fresh state
+
+    /* ⚠️🔴 `{}` DOES NOT CLEAR A FLAG. IT MERGES INTO IT (found 2026-10-06, from
+       his log: "UNDO ALL restored Vilnius from 34 to 40, then the next press took
+       the 'bludgeoning switch off' path and healed 0, 40 to 40. The switch was
+       still on after UNDO ALL.").
+
+       `Document#update` runs `mergeObject(this.toObject(), data, {recursive: true,
+       performDeletions: true})`, and a recursive merge of `{}` into an object
+       changes nothing at all. So this block has written four empty objects over
+       four full ones since the day it was written and cleared none of them: the
+       hit points went back, the record still said bludgeoning was on, and the next
+       press took the OFF path and tried to give six more to a creature already at
+       full. Foundry's own spelling for a delete is `-=key`, which is the one thing
+       this never used.
+
+       The record is deleted now, and everything the card shows is repainted from
+       it. There is one record and nothing keeps a copy. */
     await message.update({
-      [`flags.${MODULE_ID}.perTypeApplied`]: {},
-      [`flags.${MODULE_ID}.appliedComps`]: {},
-      [`flags.${MODULE_ID}.perCompApplied`]: {},
-      [`flags.${MODULE_ID}.hpDelta`]: {},
+      [`flags.${MODULE_ID}.-=appliedComps`]: null,
+      [`flags.${MODULE_ID}.-=perCompApplied`]: null,
+      [`flags.${MODULE_ID}.-=perTypeApplied`]: null,
+      [`flags.${MODULE_ID}.-=hpDelta`]: null,
       [`flags.${MODULE_ID}.applied`]: false,
     });
 
-    // Direct DOM reset — flag updates alone don't trigger the strikethroughs
-    // and "applied" badges to clear, because the message content was set at
-    // create-time and re-rendering doesn't regenerate it from flag state.
-    // Match every card instance for this message (sidebar + popouts) and
-    // strip the visual "applied" markers.
-    const cards = document.querySelectorAll(`[data-message-id="${message.id}"] .ace-qol-damage-card, [data-message-id="${message.id}"] .ace-qol-merge-card`);
-    cards.forEach(card => {
-      // Remove .applied / .struck / .consumed classes from anything that
-      // might be carrying a strikethrough or grayout style
+    for (const card of document.querySelectorAll(
+      `[data-message-id="${message.id}"] .ace-qol-damage-card, `
+      + `[data-message-id="${message.id}"] .ace-qol-merge-card`)) {
+      DamageApplicator.syncSwitches(message, card);
+      // The other cards' own markers, which are not switches.
       card.querySelectorAll(".applied, .struck, .consumed, .ace-qol-applied").forEach(el => {
         el.classList.remove("applied", "struck", "consumed", "ace-qol-applied");
       });
-      // Also strip inline text-decoration: line-through
       card.querySelectorAll("[style*='line-through']").forEach(el => {
         el.style.textDecoration = "";
       });
-      // Re-enable the APPLY ALL button if it was disabled
       const applyBtn = card.querySelector("[data-action='aceQolApplyDamage']");
       if (applyBtn) {
         applyBtn.disabled = false;
         applyBtn.textContent = applyBtn.textContent.replace(/applied\s*✓?/i, "").trim() || "APPLY ALL";
         applyBtn.classList.remove("applied", "ace-qol-btn-applied");
       }
-      // Re-enable per-target apply buttons
       card.querySelectorAll("[data-action='aceQolApplyTarget']").forEach(btn => {
         btn.disabled = false;
         btn.classList.remove("applied", "ace-qol-btn-applied");
       });
-    });
+    }
 
     if (undoneCount) ui.notifications.info(`ACE QOL: Damage undone for ${undoneCount} target(s). Card reset — you can re-apply.`);
   }
@@ -1157,174 +1249,152 @@ export class DamageApplicator {
       }
     }
 
-    // ── Per-type damage TOGGLE (click to apply, click again to undo) ──
+    /* ── EACH TYPE LINE IS ITS OWN SWITCH ────────────────────────────────────
+       His rule, 2026-10-06: "Throw out the apply and undo math. Each
+       ace-qol-dmg-type-line is its own switch. Its amount is its
+       data-damage-amount. Its type is its data-damage-type... A type starts
+       ready. Pressing its pill subtracts its amount from the token, once.
+       Pressing that pill again does not subtract it again. Undoing that type adds
+       exactly that amount back, once, and the pill returns to the ready state it
+       had before it was pressed. Undoing force does not touch bludgeoning."
+
+       ⚠️🔴 WHAT WAS THROWN OUT, AND WHY. This path kept FOUR ledgers in step by
+       hand on every press: `appliedComps` (which), `perCompApplied` (how much
+       each), `perTypeApplied` (the running total), and `hpDelta` (what the hit
+       points really moved by), plus an override multiplier read out of a cache
+       and deleted after use, plus an `applied` flag recomputed from whether every
+       pill happened to be on. Eight numbers describing two states. Any one of
+       them drifting - a clamp at full hit points, an override that outlived its
+       press, a reaction that halved the landing - put the card and the creature
+       out of step, and the only way back was UNDO ALL.
+
+       There is ONE ledger now: which components are on, per token. The amount is
+       the number on the pill, which is the number the table read; subtract it to
+       turn the switch on, add the same number back to turn it off. Nothing is
+       recomputed, so nothing can disagree. */
+    /* ⚠️ THE CARD IS PAINTED FROM THE RECORD ON EVERY RENDER, including the
+       first. A reload, a flag change on another client and a fresh draw all come
+       through here, and all three must show the same thing the record says. */
+    DamageApplicator.syncSwitches(message, el);
+
     const typeLines = el.querySelectorAll?.("[data-action='aceQolApplyType']");
     for (const line of (typeLines ?? [])) {
       if (line.dataset.wired) continue;
       line.dataset.wired = "1";
 
-      // Restore visual state from flags
-      const row = line.closest(".ace-qol-dmg-target-row");
-      const tokenDocId = row?.dataset?.tokenDocId;
-      const compIndex = parseInt(line.dataset.compIndex);
-      const appliedComps = message.flags?.[MODULE_ID]?.appliedComps?.[tokenDocId] ?? [];
-      if (appliedComps.includes(compIndex)) {
-        line.classList.add("ace-qol-dmg-type-applied");
-      }
 
       line.addEventListener("click", async () => {
-        // GM-only at function entry — defense-in-depth (v0.7.8).
-        // Buttons are hidden for non-GM via CSS in damage-engine.mjs, but
-        // a crafted DOM click, devtools, or module interference can still
-        // reach this handler. The actor.update + message.update calls
-        // below would partially go through (player owns their own actor =
-        // permission allowed) and the front-half flag manipulation runs
-        // unguarded regardless. Grok audit catch.
+        // ⚠️ GM ONLY AT THE DOOR, not only in the CSS that hides the pill. A
+        // crafted click, devtools or another module can reach this handler, and a
+        // player owns their own actor so the write would go through. (Grok, v0.7.8)
         if (!game.user.isGM) {
-          console.warn(`${MODULE_ID} | per-type damage toggle clicked by non-GM (${game.user.name}) — blocked.`);
+          console.warn(`${MODULE_ID} | a damage switch was clicked by ${game.user.name}, `
+            + `who is not the GM. Nothing was changed.`);
           return;
         }
 
-        const baseAmount = parseInt(line.dataset.damageAmount);
-        const dmgType = line.dataset.damageType;
+        const amount = parseInt(line.dataset.damageAmount);
+        const dmgType = String(line.dataset.damageType ?? "damage");
         const idx = parseInt(line.dataset.compIndex);
-        if (isNaN(baseAmount) || baseAmount <= 0) return;
-
         const row = line.closest(".ace-qol-dmg-target-row");
         const tokenDocId = row?.dataset?.tokenDocId;
-        if (!tokenDocId) return;
-
-        const currentApplied = message.flags?.[MODULE_ID]?.appliedComps?.[tokenDocId] ?? [];
-        const entry = message.flags?.[MODULE_ID]?.damageResults?.find(r => r.tokenDocId === tokenDocId);
-        if (!entry) return;
-        const actor = DamageApplicator.resolveTargetActor(entry);
+        // ⚠️ SAID, NOT SWALLOWED. A switch that does nothing and explains nothing
+        // is the failure this suite has paid for more than once.
+        if (!tokenDocId) {
+          console.warn(`${MODULE_ID} | a ${dmgType} switch has no creature on its row, so it `
+            + `cannot change anybody's hit points.`);
+          return;
+        }
+        if (!Number.isFinite(amount) || amount <= 0) {
+          console.warn(`${MODULE_ID} | the ${dmgType} switch carries no amount `
+            + `("${line.dataset.damageAmount}"), so there is nothing to take off or put back.`);
+          return;
+        }
+        const entry = (message.flags?.[MODULE_ID]?.damageResults ?? [])
+          .find(r => r.tokenDocId === tokenDocId);
+        const actor = entry ? DamageApplicator.resolveTargetActor(entry) : null;
         if (!actor) {
-          ui.notifications.warn(`ACE QOL: Could not find actor for token.`);
+          console.warn(`${MODULE_ID} | no creature could be found for this row, so the ${dmgType} `
+            + `switch did nothing.`);
+          ui.notifications.warn("ACE QOL: could not find that creature, so nothing was changed.");
           return;
         }
 
-        // ════════════════════════════════════════════════════════════════
-        //  TOGGLE OFF — undo this type's damage
-        // ════════════════════════════════════════════════════════════════
-        if (currentApplied.includes(idx)) {
-          const appliedAmount = message.flags?.[MODULE_ID]?.perCompApplied?.[tokenDocId]?.[idx] ?? 0;
-          if (appliedAmount <= 0) {
-            console.warn(`${MODULE_ID} | Toggle-off: no recorded amount for comp ${idx} (${dmgType})`);
+        // ⚠️ ONE PRESS AT A TIME, PER SWITCH. Two clicks a few milliseconds apart
+        // both read the same flags and both wrote, which is how a type came off
+        // twice. The guard is on the element, so force and bludgeoning are still
+        // independent of each other.
+        if (line.dataset.busy) return;
+        line.dataset.busy = "1";
+        try {
+          const applied = message.flags?.[MODULE_ID]?.appliedComps?.[tokenDocId] ?? [];
+          const isOn = applied.includes(idx);
+          const hpOf = () => Number(actor?.system?.attributes?.hp?.value ?? 0);
+          const before = hpOf();
+
+          if (isOn) {
+            /* ── OFF: put back exactly what the pill says, once ────────────────
+               "Undoing a type that was never applied does nothing" is the `isOn`
+               test above, and "undoing force does not touch bludgeoning" is this
+               writing only its own index. */
+            await DamageApplicator.applyHPHeal(actor, amount, {
+              label: `${dmgType} switch off`,
+              correction: true,   // rewinding the ledger, not healing: nothing may block it
+            });
+            await message.update({
+              [`flags.${MODULE_ID}.appliedComps.${tokenDocId}`]: applied.filter(i => i !== idx),
+              [`flags.${MODULE_ID}.perCompApplied.${tokenDocId}.${idx}`]: null,
+              [`flags.${MODULE_ID}.applied`]: false,
+            });
+            DamageApplicator.syncSwitches(message, line.closest(".ace-qol-damage-card") ?? el);
+            console.log(`${MODULE_ID} | ${entry.name}: ${amount} ${dmgType} put back. `
+              + `HP ${before} to ${hpOf()}.`);
+            ui.notifications.info(`${entry.name}: ${amount} ${dmgType} put back.`);
             return;
           }
 
-          // Route through the canonical helper (clamps to max HP, owns
-          // the actor.update). Refactored from inline math for the same
-          // reason APPLY ALL was refactored in v0.7.3: single source of
-          // truth for HP mutation. Grok audit follow-on.
-          const { currentHP, newHP: restoredHP } = await DamageApplicator.applyHPHeal(actor, appliedAmount, {
-            label: `per-type UNDO ${dmgType}`,
-            correction: true,   // rewinding the ledger, not healing — nothing may block it
-          });
-
-          const newApplied = currentApplied.filter(i => i !== idx);
-          const prevTotal = message.flags?.[MODULE_ID]?.perTypeApplied?.[tokenDocId] ?? 0;
-          const _prevDelta3 = message.flags?.[MODULE_ID]?.hpDelta?.[tokenDocId] ?? 0;
-          // What the heal ACTUALLY put back (it clamps at max hit points).
-          const _restored   = Math.max(0, Number(restoredHP) - Number(currentHP));
-          const flagUpdate = {
-            [`flags.${MODULE_ID}.appliedComps.${tokenDocId}`]: newApplied,
-            [`flags.${MODULE_ID}.perTypeApplied.${tokenDocId}`]: Math.max(0, prevTotal - appliedAmount),
-            [`flags.${MODULE_ID}.perCompApplied.${tokenDocId}.${idx}`]: null,
-            // Take the same amount back off the true-movement tally, so a later
-            // UNDO ALL doesn't hand this component's hit points back twice.
-            [`flags.${MODULE_ID}.hpDelta.${tokenDocId}`]: Math.max(0, _prevDelta3 - _restored),
-          };
-          if (message.flags?.[MODULE_ID]?.applied) {
-            flagUpdate[`flags.${MODULE_ID}.applied`] = false;
+          /* ── ON: take the pill's own amount off, once ──────────────────────
+             ⚠️ THE RECIPE STILL HAS ITS SAY (The One Road, phase 3). A component
+             the attack's recipe does not land on this target's result is not
+             applied by hand either. */
+          const refusal = DamageApplicator._recipeGate(message.flags?.[MODULE_ID], entry)
+            .refusal(entry.components?.[idx]);
+          if (refusal) {
+            console.warn(`${MODULE_ID} | ${entry.name} does not take this ${dmgType}: ${refusal}.`);
+            ui.notifications.warn(`ACE QOL: ${entry.name} does not take this ${dmgType}: ${refusal}.`);
+            return;
           }
-          await message.update(flagUpdate);
 
-          console.log(`${MODULE_ID} | Per-type UNDO: comp ${idx} (${appliedAmount} ${dmgType}) from ${entry.name}: HP ${currentHP} → ${restoredHP}`);
-          line.classList.remove("ace-qol-dmg-type-applied");
-          ui.notifications.info(`ACE QOL: Undid ${appliedAmount} ${dmgType} damage from ${entry.name} (${currentHP} → ${restoredHP})`);
-          return;
-        }
-
-        // ════════════════════════════════════════════════════════════════
-        //  TOGGLE ON — apply this type's damage
-        // ════════════════════════════════════════════════════════════════
-        // ⚠️ THE RECIPE HAS ITS SAY HERE TOO (Phase 3): a row the attack's recipe
-        // does not land on this target's result is not applied on its own either.
-        const _refusal = DamageApplicator._recipeGate(message.flags?.[MODULE_ID], entry).refusal(entry.components?.[idx]);
-        if (_refusal) {
-          console.warn(`${MODULE_ID} | Per-type apply refused: ${entry.name}, comp ${idx} (${dmgType}): ${_refusal}.`);
-          ui.notifications.warn(`ACE QOL: ${entry.name} does not take this ${dmgType} damage: ${_refusal}.`);
-          return;
-        }
-        const cacheKey = `${message.id}|${tokenDocId}`;
-        const override = DamageApplicator.overrideCache.get(cacheKey);
-        const amount = (typeof override === "number")
-          ? Math.floor(baseAmount * override)
-          : baseAmount;
-
-        // Route through the canonical helper — owns the HP math, the
-        // polymorph excess-damage capture, and the actor.update. Replaces
-        // inline duplication (same fix pattern as APPLY ALL in v0.7.3).
-        // Grok audit follow-on.
-        // ONE typed entry — Heavy Armor Master needs to know this is (say)
-        // 7 slashing from a non-magical weapon, not just "7 damage".
-        // ⚠️ THROUGH THE HIT-POINT DOOR, like APPLY ALL (Phase 3, 2026-09-14): the
-        // door writes it, carries the item's magic (this path passed no item, so
-        // a +1 sword's slashing read as nonmagical here), and sends the one
-        // damage-applied signal with the real movement in it, which the OverTime
-        // engine reads for regeneration.
-        const _srcFlags = message.flags?.[MODULE_ID] ?? {};
-        let _srcItem = null;
-        try { if (_srcFlags.itemUuid) _srcItem = fromUuidSync?.(_srcFlags.itemUuid) ?? null; }
-        catch (_) { _srcItem = null; }
-        const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
-        // Same door, same question: a single type applied by hand.
-        let _one = [{ type: String(dmgType).toLowerCase(), final: amount }];
-        const _row = (_srcFlags.damageResults ?? []).find(r => r?.tokenDocId === tokenDocId) ?? null;
-        if (!_row?.reactionsAsked) {
-          _one = await DamageApplicator._askDamageReactions(actor, _one, {
-            token: canvas.scene?.tokens?.get?.(tokenDocId)?.object ?? null,
-            source: _srcFlags.actorId ? (game.actors?.get?.(_srcFlags.actorId) ?? null) : null,
-            item: _srcItem, where: `per-type ${dmgType}`,
+          // ⚠️ THROUGH THE HIT-POINT DOOR, like APPLY ALL. The door owns the
+          // write, carries what dealt it (a +1 sword's slashing is magical), and
+          // sends the one damage-applied signal that regeneration listens for.
+          const srcFlags = message.flags?.[MODULE_ID] ?? {};
+          let srcItem = null;
+          try { if (srcFlags.itemUuid) srcItem = fromUuidSync?.(srcFlags.itemUuid) ?? null; }
+          catch (_) { srcItem = null; }
+          await HpDoor.damage(actor, [{ type: dmgType.toLowerCase(), final: amount }], {
+            tokenDocId, item: srcItem,
+            source: srcFlags.actorId ? (game.actors?.get?.(srcFlags.actorId) ?? null) : null,
+            label: `${dmgType} switch on`,
           });
-        }
-        const _landed = await HpDoor.damage(actor, _one, {
-          tokenDocId, item: _srcItem,
-          source: _srcFlags.actorId ? (game.actors?.get?.(_srcFlags.actorId) ?? null) : null,
-          label: `per-type ${dmgType}`,
-        });
-        const _realDelta = Number(_landed?.hpDelta) || 0;
-        const newHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
 
-        const prevApplied = message.flags?.[MODULE_ID]?.perTypeApplied?.[tokenDocId] ?? 0;
-        const overrideLabel = (typeof override === "number" && override !== 1) ? ` (×${override})` : "";
-        console.log(`${MODULE_ID} | Per-type apply: comp ${idx} (${amount} ${dmgType}${overrideLabel}) to ${entry.name}: HP ${currentHP} → ${newHP}`);
-
-        const updatedComps = [...currentApplied, idx];
-        const _prevDelta2 = message.flags?.[MODULE_ID]?.hpDelta?.[tokenDocId] ?? 0;
-        await message.update({
-          [`flags.${MODULE_ID}.perTypeApplied.${tokenDocId}`]: prevApplied + amount,
-          [`flags.${MODULE_ID}.appliedComps.${tokenDocId}`]: updatedComps,
-          [`flags.${MODULE_ID}.perCompApplied.${tokenDocId}.${idx}`]: amount,
-          // Keep the true-movement tally in step so a later UNDO ALL is exact.
-          [`flags.${MODULE_ID}.hpDelta.${tokenDocId}`]: _prevDelta2 + _realDelta,
-        });
-
-        DamageApplicator.overrideCache.delete(cacheKey);
-        line.classList.add("ace-qol-dmg-type-applied");
-        ui.notifications.info(`ACE QOL: Applied ${amount} ${dmgType} damage to ${entry.name} (${currentHP} → ${newHP})`);
-
-        // If ALL types now applied, mark fully applied
-        const totalComps = el.querySelectorAll("[data-action='aceQolApplyType']");
-        const allDone = [...totalComps].every(l => {
-          const ci = parseInt(l.dataset.compIndex);
-          const tid = l.closest(".ace-qol-dmg-target-row")?.dataset?.tokenDocId;
-          const ac = message.flags?.[MODULE_ID]?.appliedComps?.[tid] ?? updatedComps;
-          return ac.includes(ci);
-        });
-        if (allDone) {
-          await message.setFlag(MODULE_ID, "applied", true);
+          /* ⚠️ ONE RECORD OF WHAT WAS TAKEN, and here it IS `data-damage-amount`.
+             UNDO ALL reads this so it gives back each type exactly once and
+             exactly what came off, including a component APPLY ALL landed at a
+             quarter or a half. It is the only number kept beside the ledger. */
+          await message.update({
+            [`flags.${MODULE_ID}.appliedComps.${tokenDocId}`]: [...applied, idx],
+            [`flags.${MODULE_ID}.perCompApplied.${tokenDocId}.${idx}`]: amount,
+          });
+          DamageApplicator.syncSwitches(message, line.closest(".ace-qol-damage-card") ?? el);
+          console.log(`${MODULE_ID} | ${entry.name}: ${amount} ${dmgType} taken off. `
+            + `HP ${before} to ${hpOf()}.`);
+          ui.notifications.info(`${entry.name}: ${amount} ${dmgType}.`);
+        } catch (err) {
+          console.error(`${MODULE_ID} | the ${dmgType} switch threw, so the card and the creature `
+            + `may now disagree. Check ${entry?.name}'s hit points:`, err);
+        } finally {
+          delete line.dataset.busy;
         }
       });
     }

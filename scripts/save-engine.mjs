@@ -26,7 +26,7 @@ import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you me
 import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 // The one DC wrapper: it names the creature(s) rolling against the number
 // (ACE-ONE-ROAD.md § 13.2).
-import { registerChatCardHandler, dcSpan } from "./chat-render-utils.mjs";
+import { registerChatCardHandler, dcSpan, bonusSpan } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 // ⚠️ THE ONE GATE. The pre-roll decision lives in scripts/gate/action-gate.mjs
@@ -3449,7 +3449,14 @@ export class SaveEngine {
       + `<span class="ace-qol-save-cast-text">`
       + `<strong>${esc(who)}</strong> ${isSpell ? "casts" : "uses"} <strong>${esc(title)}</strong>`
       + `${targetNames ? ` on <strong>${targetNames}</strong>` : ""}`
-      + `${dcText ? dcSpan(` · ${dcText}`, rollers, "ace-qol-save-cast-dc") : ""}`
+      /* ⚠️🔴 A PARTY MEMBER'S OWN DC IS THE TABLE'S (his rule, 2026-10-06: "If one
+         of the party cast it, the table also sees his formula and his DC. Firaxis
+         casts Fireball: 8d6 fire, DC 13..."). The roller test alone hid it: the
+         creatures rolling against Firaxis's Fireball are the GM's, so his own
+         save DC was kept from his own table. Who it BELONGS to is the second
+         question, and a dragon's DC 18 is still nobody's but his. */
+      + `${dcText ? dcSpan(` · ${dcText}`, rollers, "ace-qol-save-cast-dc",
+            { whose: casterActor?.id ?? null }) : ""}`
       + `</span>`
       + `</div>`;
   }
@@ -3909,9 +3916,7 @@ export class SaveEngine {
              template is unused, delete it or wire it. Do not leave both."). This
              card kept its own manila header with the item icon, a title and a DC
              pill, so whichever path rendered decided what he saw. They all draw
-             the shell now: the caster's own portrait and one sentence, then the
-             quiet line whose DC half is the GM's alone. -->
-        ${SaveEngine.saveQuietLineHtml(targetData, { saveAbility, saveDC, abilityLabel })}
+             the shell now: the caster's own portrait and one sentence. -->
         ${halfOnSave ? '<div class="ace-qol-save-half-badge">HALF ON SAVE</div>' : ""}
         ${_effectLine ? `<div class="ace-qol-save-effect-line"><i class="fas fa-angle-right"></i> ${_effectLine}</div>` : ""}
 
@@ -4204,10 +4209,8 @@ export class SaveEngine {
              template is unused, delete it or wire it. Do not leave both."). This
              card kept its own manila header with the item icon, a title and a DC
              pill, so whichever path rendered decided what he saw. They all draw
-             the shell now: the caster's own portrait and one sentence, then the
-             quiet line whose DC half is the GM's alone. -->
+             the shell now: the caster's own portrait and one sentence. -->
         ${this._castAnnouncementHtml(item, actor, targetStates, activityId)}
-        ${SaveEngine.saveQuietLineHtml(targetStates, { saveAbility, saveDC, abilityLabel })}
         ${halfOnSave ? '<div class="ace-qol-save-half-badge">HALF ON SAVE</div>' : ""}
         <div class="ace-qol-save-targets">
           ${targetRows}
@@ -5933,7 +5936,12 @@ export class SaveEngine {
     const luck = r.luck
       ? [`<span class="ace-qol-tag" style="color:#7fd08a;border-color:#3fa34d;"><i class="fas fa-clover"></i> ${esc(r.luck)}</span>`]
       : [];
-    const all = [...adv, ...dis, ...luck];
+    /* ⚠️ EVASION JOINS THE TAGS (2026-10-05). It used to ride on the damage line.
+       That line is now the damage and the hit points side by side and it is not
+       allowed to wrap, so anything else standing on it pushes one of the two off
+       the card. Evasion is a tag about the save, like advantage is, so it belongs
+       in the row of tags with them and nowhere else. */
+    const all = [...adv, ...dis, ...luck, SaveEngine._evasionPill(r)].filter(Boolean);
     if (!all.length) return "";
     return `<div class="ace-qol-save-tgt-actions" style="display:flex;flex-wrap:wrap;gap:4px;`
       + `margin-top:4px;${indent ? `padding-left:${indent}px;` : ""}">${all.join("")}</div>`;
@@ -8965,68 +8973,20 @@ export class SaveEngine {
     return (results ?? []).filter(r => r && !r.noRoll && !SaveEngine._isImmuneRow(r));
   }
 
-  /**
-   * LINE 2 OF THE SHELL: one quiet line (his card, 2026-09-29).
-   *
-   *     Wis 16 (+3) = +3 · DC 13 Wisdom
-   *
-   * "Formula is already on line 2 so they know the math before they click." That is
-   * why it is here and not in the row: before the roll a row has no total to hang a
-   * formula off, and the person about to press the die is the one who wants to know
-   * what they are adding to it.
-   *
-   * With ONE creature rolling, this carries that creature's own bonus and the row
-   * does not repeat it. With several, each row keeps its own and this is the DC
-   * alone, because one shared line cannot be true for four different sheets.
-   *
-   * ⚠️🔴 THE DC IS HIS ALONE (his standing rule: a player never sees a DC).
-   * The half after the dot is `.ace-qol-gm-only`, hidden until the render stamps
-   * this screen as the GM's. The header this replaced printed "DC 13 Wisdom" to the
-   * whole table, on every save card in the game.
-   */
-  static saveQuietLineHtml(results, { saveAbility, saveDC, abilityLabel = null } = {}) {
-    const rollers = SaveEngine._rollersOf(results);
-    const label = abilityLabel
-      ?? CONFIG.DND5E?.abilities?.[saveAbility]?.label
-      ?? String(saveAbility ?? "").toUpperCase();
-    let formula = "";
-    if (rollers.length === 1) {
-      try {
-        const r = rollers[0];
-        const actor = (game.scenes?.get(r.sceneId)?.tokens?.get(r.tokenDocId)?.actor)
-          ?? (r.actorId ? game.actors?.get(r.actorId) : null);
-        const ab = String(r.saveAbility ?? saveAbility ?? "").toLowerCase();
-        // ⚠️🔴 PRINT THE BONUS THAT WAS ACTUALLY ADDED (his card, 2026-09-30:
-        // "The live card says = +0. That is wrong. Print the bonus that was actually
-        // added. If the sheet and the roll disagree, console only.")
-        //
-        // The parts come off the sheet, and the TOTAL comes off the roll: the die
-        // taken off the total is the bonus that went in, whatever the sheet adds up
-        // to. Before the roll there is no total to read, so the sheet's own sum
-        // stands. `formulaText` logs any disagreement between the two and prints
-        // neither argument on the card.
-        const _die = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
-        const _used = (typeof r.saveTotal === "number" && _die != null)
-          ? r.saveTotal - _die : null;
-        if (actor && ab) formula = formulaText(explainSave(actor, ab).parts, _used);
-        if (!formula) {
-          console.log(`${MODULE_ID} | the save card could not read what makes ${r.name}'s `
-            + `${ab || "save"} bonus, so its quiet line shows the DC alone.`);
-        }
-      } catch (err) {
-        console.warn(`${MODULE_ID} | the save card could not read the roller's own bonus for its `
-          + `quiet line, so that line shows the DC alone:`, err);
-      }
-    }
-    // ⚠️ THE DC LEFT THIS LINE. It is on the header now, beside who did what to
-    // whom, which is where he asked for it: "Jeth uses Spiked Chain on Escher · DC
-    // 14 Dexterity". This line is the one short formula and nothing else.
-    if (!formula) return "";
-    return `
-      <div class="ace-qol-save-quiet">
-        <span class="ace-qol-save-quiet-formula">${foundry.utils.escapeHTML(formula)}</span>
-      </div>`;
-  }
+  /* ⚠️🔴 THE QUIET LINE IS DELETED, NOT LEFT UNUSED (his rule, 2026-10-05:
+     "Delete the quiet line. 'Dex 10 (+0) = D20 + 0' does not get printed.").
+
+     It was line 2 of the shell from 2026-09-29, built so a roller could see the
+     arithmetic before pressing the die. On a creature with no bonus it printed a
+     sentence that says nothing twice, and the row under it already carries the
+     die, the bonus and the total - and has always printed nothing at all for a
+     bonus of zero, which is the rule he restated here.
+
+     The builder goes with its callers rather than returning an empty string,
+     because "if the new template is unused, delete it or wire it, do not leave
+     both" is his own correction from the morning this line was born. The DC never
+     lived here; it is on the header, through castLineHtml, for the people rolling
+     against it. */
 
   static saveResultRowHtml(r, opts = {}) {
       // Immune, no save: one line under the rows (_immuneLine), never a row each.
@@ -9159,10 +9119,20 @@ export class SaveEngine {
           // A bonus of nothing says nothing rather than "+ 0".
           const modPart = modifier === 0 ? "" : ` ${modifier >= 0 ? "+" : "−"} ${Math.abs(modifier)}`;
           d20El = aceD20FaceImg(d20Face, { size: 40 });
+          /* ⚠️🔴 THE DIE IS THE TABLE'S, THE BONUS BELONGS TO WHO ROLLED IT (his
+             rule, 2026-10-06: "A character saving against a creature: they see his
+             die, his own bonus, Failed or Saved... The table does not see a
+             creature's Dexterity or any other bonus").
+
+             So the face and the verdict are public on every row, and the bonus
+             and the total it makes are shown for a party member and kept for a
+             creature. The total goes with the bonus because a face of 14 beside a
+             total of 21 states the bonus as plainly as the chip does. */
+          const _rowWhose = r.actorId ?? null;
           mathLine = `<span class="ace-qol-save-math">`
             + `<span class="ace-qol-save-math-die">${d20Face}</span>`
-            + `<span class="ace-qol-save-math-mod">${modPart} = </span>`
-            + `<span class="${passClass} ace-qol-save-math-total">${r.saveTotal}</span>`
+            + bonusSpan(`<span class="ace-qol-save-math-mod">${modPart} = </span>`
+              + `<span class="${passClass} ace-qol-save-math-total">${r.saveTotal}</span>`, _rowWhose)
             + `</span>`;
         } else {
           /* ⚠️🔴 A BARE NUMBER IS A ROW THAT LOST SOMETHING, AND IT SAYS SO.
@@ -9254,25 +9224,16 @@ export class SaveEngine {
     }
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
-    // ── LINE 2: ONE QUIET LINE (his shell, 2026-09-29) ─────────────────
-    //
-    //     Wis 16 (+3) = +3 · DC 13 Wisdom
-    //
-    // "Formula is already on line 2 so they know the math before they click." That
-    // is the whole reason it is up here and not down in the row: before the roll a
-    // row has no total to hang a formula off, and the person about to press the die
-    // is the person who wants to know what they are adding.
-    //
-    // With one creature rolling, the line carries that creature's own bonus and the
-    // row does not repeat it. With several, each row keeps its own and this line is
-    // the DC alone, because one shared line cannot be true for four sheets.
-    //
-    // ⚠️🔴 AND THE DC IS HIS (his standing rule: a player never sees a DC). The
-    // half after the dot is inside `.ace-qol-gm-only`, which is hidden until the
-    // render stamps this screen as the GM's. The old header printed "DC 13 Wisdom"
-    // to the whole table on every save card in the game.
+    /* ⚠️🔴 THE QUIET LINE IS GONE (his rule, 2026-10-05: "Delete the quiet line.
+       'Dex 10 (+0) = D20 + 0' does not get printed.").
+       It was line 2 of the shell from 2026-09-29, on the argument that a roller
+       wants the arithmetic before pressing the die. On a creature with no bonus it
+       degenerated into a line that says nothing twice, and the row underneath it
+       already carries the die, the bonus and the total - and the row has always
+       printed nothing at all for a bonus of zero, which is the behaviour he asked
+       for here. The DC did not live on this line; it is on the header, through
+       `castLineHtml`, for the people rolling against it. */
     const _rollers = SaveEngine._rollersOf(results);
-    const _quietLine = SaveEngine.saveQuietLineHtml(results, { saveAbility, saveDC, abilityLabel });
 
     // ── LINES 3 AND 4: one row per creature, and what landed under it ─────
     //
@@ -9471,7 +9432,6 @@ export class SaveEngine {
             // dc-ok: castLineHtml puts this through dcSpan with the rollers below.
             dcText: Number.isFinite(Number(saveDC)) ? `DC ${saveDC} ${abilityLabel}` : "",
             rollers: SaveEngine.rollersOn(results) })}
-        ${_quietLine}
         <div class="ace-qol-save-results">
           ${targetRows}
           ${SaveEngine._immuneLine(results)}
@@ -10323,31 +10283,28 @@ export class SaveEngine {
                   style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
           ${SaveEngine._advTagsHtml(r, { indent: 32 })}
-          <!-- the damage line: the number, what made it, and what it did to the hit
-               points are one thought. The buttons that change it are another, and
-               they are the line below (his rule, 2026-10-02: "The word is on the
-               damage line, beside the number. The X, the quarter, the half, the one
-               and the two stay on the line below it."). -->
-          <div class="ace-qol-save-dmg-line">
-            ${SaveEngine._evasionPill(r)}
-            <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
-          </div>
-          <div class="ace-qol-save-ovr-line">
+          <!-- ⚠️🔴 THE BUTTONS ARE THE GM HALF (his rule, 2026-10-06: "It
+               does not see Apply, or the quarter, half, 1, and 2 buttons."). One
+               card: the dice and the damage above are the table's, this row is
+               his, and nothing is whispered away. -->
+          <div class="ace-qol-save-ovr-line ace-qol-gm-only">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
             <button class="ace-qol-save-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.25">\u00bc</button>
             <button class="ace-qol-save-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.5">\u00bd</button>
             <button class="ace-qol-save-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-save-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">2</button>
           </div>
-          <!-- the hit points, LAST and on their own line (his rule, 2026-10-03:
-               "Every creature on that card uses one order... then the buttons
-               x, a quarter, a half, one, two, then the HP line last. HP: 50 to 50
-               goes under the buttons, not above them and not beside the damage.").
-               It used to ride on the damage line, so whether it landed beside the
-               number or wrapped above the buttons depended on how wide that row's
-               own number happened to be, and no two creatures agreed. -->
+          <!-- THE DAMAGE AND THE HIT POINTS ARE ONE LINE, AND IT IS LAST (his rule,
+               2026-10-05: "61 DMG moves down onto the hit-point line, beside HP 500
+               to 439. It does not sit above the quarter, half, 1, and 2 buttons.").
+               The number had a line of its own above the buttons, which put the
+               result of the save and what it did to the creature on opposite sides
+               of a row of controls. They are the same thought, so they are the same
+               line: what it took, then what it has left. The order he set on
+               2026-10-03 is unchanged otherwise - the roll, the buttons, then this. -->
           <div class="ace-qol-save-hp-line">
-            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
+            <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
+            <span class="ace-qol-save-result-hp ace-qol-gm-only">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
         </div>
       `;
@@ -10366,9 +10323,7 @@ export class SaveEngine {
              template is unused, delete it or wire it. Do not leave both."). This
              card kept its own manila header with the item icon, a title and a DC
              pill, so whichever path rendered decided what he saw. They all draw
-             the shell now: the caster's own portrait and one sentence, then the
-             quiet line whose DC half is the GM's alone. -->
-        ${SaveEngine.saveQuietLineHtml(results, { saveAbility, saveDC, abilityLabel })}
+             the shell now: the caster's own portrait and one sentence. -->
         <div class="ace-qol-save-dmg-summary">Damage: ${dmgSummary}</div>
         <div class="ace-qol-save-results">
           ${targetRows}
@@ -10723,31 +10678,28 @@ export class SaveEngine {
                   style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
           ${SaveEngine._advTagsHtml(r, { indent: 32 })}
-          <!-- the damage line: the number, what made it, and what it did to the hit
-               points are one thought. The buttons that change it are another, and
-               they are the line below (his rule, 2026-10-02: "The word is on the
-               damage line, beside the number. The X, the quarter, the half, the one
-               and the two stay on the line below it."). -->
-          <div class="ace-qol-save-dmg-line">
-            ${SaveEngine._evasionPill(r)}
-            <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
-          </div>
-          <div class="ace-qol-save-ovr-line">
+          <!-- ⚠️🔴 THE BUTTONS ARE THE GM HALF (his rule, 2026-10-06: "It
+               does not see Apply, or the quarter, half, 1, and 2 buttons."). One
+               card: the dice and the damage above are the table's, this row is
+               his, and nothing is whispered away. -->
+          <div class="ace-qol-save-ovr-line ace-qol-gm-only">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
             <button class="ace-qol-save-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.25">\u00bc</button>
             <button class="ace-qol-save-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.5">\u00bd</button>
             <button class="ace-qol-save-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-save-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">2</button>
           </div>
-          <!-- the hit points, LAST and on their own line (his rule, 2026-10-03:
-               "Every creature on that card uses one order... then the buttons
-               x, a quarter, a half, one, two, then the HP line last. HP: 50 to 50
-               goes under the buttons, not above them and not beside the damage.").
-               It used to ride on the damage line, so whether it landed beside the
-               number or wrapped above the buttons depended on how wide that row's
-               own number happened to be, and no two creatures agreed. -->
+          <!-- THE DAMAGE AND THE HIT POINTS ARE ONE LINE, AND IT IS LAST (his rule,
+               2026-10-05: "61 DMG moves down onto the hit-point line, beside HP 500
+               to 439. It does not sit above the quarter, half, 1, and 2 buttons.").
+               The number had a line of its own above the buttons, which put the
+               result of the save and what it did to the creature on opposite sides
+               of a row of controls. They are the same thought, so they are the same
+               line: what it took, then what it has left. The order he set on
+               2026-10-03 is unchanged otherwise - the roll, the buttons, then this. -->
           <div class="ace-qol-save-hp-line">
-            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
+            <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
+            <span class="ace-qol-save-result-hp ace-qol-gm-only">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
         </div>
       `;
@@ -10766,9 +10718,7 @@ export class SaveEngine {
              template is unused, delete it or wire it. Do not leave both."). This
              card kept its own manila header with the item icon, a title and a DC
              pill, so whichever path rendered decided what he saw. They all draw
-             the shell now: the caster's own portrait and one sentence, then the
-             quiet line whose DC half is the GM's alone. -->
-        ${SaveEngine.saveQuietLineHtml(results, { saveAbility, saveDC, abilityLabel })}
+             the shell now: the caster's own portrait and one sentence. -->
         <div class="ace-qol-save-dmg-summary">Damage: ${dmgSummary}</div>
         <div class="ace-qol-save-results">
           ${targetRows}

@@ -460,22 +460,40 @@
    the next they wrapped above the buttons, and which it was came down to how
    wide that row's own damage number happened to be. One order, every creature:
    the roll, the damage, the buttons, then this. */
-.ace-qol-save-hp-line {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  row-gap: 4px;
-  padding: 0 4px 3px 32px;
-}
+/* ⚠️🔴 THE DAMAGE AND THE HIT POINTS SHARE ONE LINE AND IT MUST NOT WRAP (his
+   rule, 2026-10-05, with a screenshot): "Under them, one line that does not wrap:
+   the damage on the left, then the HP box. 65 DMG, then HP 438 to 373. Shrink the
+   damage number if that is what it takes to keep them side by side. Never put the
+   damage above the hit points, and never put it back up with the buttons."
 
-.ace-qol-save-dmg-line {
+   This is the ONE place in the suite where wrapping is wrong, and the reason is
+   that wrapping here does not stack two readable things, it puts the damage ABOVE
+   the hit points and reads as a second row belonging to the buttons overhead. The
+   two strings are short and fixed in shape ("65 DMG", "HP 438 to 373"), so the
+   number gives up some size instead and both stay on the line. Nothing else is
+   allowed onto it - the Evasion tag moved up with the other tags for this reason. */
+.ace-qol-save-hp-line {
+  /* no-wrap-ok: his explicit instruction, 2026-10-05. The damage number shrinks to
+     fit rather than wrapping above the hit points, and both strings are short and
+     fixed in shape. */
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
-  row-gap: 4px;
-  padding: 2px 4px 0 32px;
+  padding: 0 4px 3px 32px;
+  min-width: 0;
+}
+/* Smaller than the 1.5rem it has elsewhere, because this line carries the hit
+   points beside it and a narrow chat sidebar has to hold both. */
+.ace-qol-save-hp-line .ace-qol-save-result-dmg {
+  font-size: 1.2rem;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.ace-qol-save-hp-line .ace-qol-save-result-hp {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0 7px;
 }
 .ace-qol-evasion-pill {
   font-size: 14px;
@@ -863,17 +881,34 @@
 .ace-qol-dmg-type-line .ace-qol-dmg-raw-was { opacity: 0.8; }
 .ace-qol-dmg-type-clickable:hover .ace-qol-dmg-type-name { text-decoration: underline; }
 .ace-qol-dmg-type-clickable:active { filter: brightness(1.5); }
+/* ⚠️🔴 ON IS THE PILL REVERSED, WITH A LINE THROUGH THE WORDS (his rule,
+   2026-10-06: "The pill reverses its colors and a line goes through the words.
+   Pressing it while it is on adds exactly that amount back and turns it off. It
+   looks the way it did before the first press.").
+
+   It used to go to 40% opacity over a faint green wash, which on a mid-tone pill
+   reads as "this one is disabled", not "this one is on". Reversed is unambiguous:
+   the pill's own colour is set inline as its fill, so turning the text light and
+   the fill dark is the one change that cannot clash with whichever damage type it
+   is. Off is simply the absence of this rule, which is why it comes back looking
+   exactly as it did. */
 .ace-qol-dmg-type-applied {
-  opacity: 0.4;
   cursor: pointer;
+  opacity: 1;
+  background: #12120f !important;
+  box-shadow: inset 0 0 0 2px currentColor, 0 1px 3px rgba(0,0,0,0.45);
+}
+.ace-qol-dmg-type-applied,
+.ace-qol-dmg-type-applied .ace-qol-dmg-final,
+.ace-qol-dmg-type-applied .ace-qol-dmg-type-name,
+.ace-qol-dmg-type-applied .ace-qol-dmg-raw-was,
+.ace-qol-dmg-type-applied .ace-qol-dmg-arrow {
+  color: #f3ead7 !important;
   text-decoration: line-through;
-  border-color: rgba(76,175,80,0.3) !important;
-  background: rgba(76,175,80,0.08) !important;
+  text-decoration-thickness: 2px;
 }
 .ace-qol-dmg-type-applied:hover {
-  opacity: 0.7;
-  border-color: rgba(255,183,77,0.6) !important;
-  background: rgba(255,183,77,0.12) !important;
+  background: #1c1b16 !important;
 }
 
 /* ─── Grand total multi-type separator ─────────────────────────────── */
@@ -1038,14 +1073,57 @@
   text-shadow: 0 0 8px rgba(200, 0, 0, 0.5), 0 1px 2px rgba(0,0,0,0.6);
 }
 
+/* ⚠️🔴 THE PLUS AND THE EQUALS ARE THE SAME TEXT AS "+4" (his rule,
+   2026-10-06: "ace-qol-dmg-plus and ace-qol-dmg-equals must match
+   ace-qol-mod-labeled exactly. Same font-size, same font-weight, same
+   font-family, same color, same line-height.").
+
+   Matching the SIZE alone was not enough and he was right: they stayed #666 at
+   weight 400 against #e8e6e0 at weight 700, and a thin grey glyph at the same
+   pixel size reads smaller than a bold near-white one. Grey measured about 2.6:1
+   on this card, the same contrast the struck-through number was corrected for a
+   few rules up.
+
+   ONE rule for all three, so the next change to the modifier's text carries the
+   two marks that join it instead of leaving them behind again. The layout
+   declarations stay on `.ace-qol-mod-labeled` alone, because these are single
+   glyphs and not flex boxes, and the "+4 STR" words are untouched:
+   `.ace-qol-mod-label` keeps its own 0.55rem chip. The family and the line height
+   are written out rather than inherited, because "exactly" has to be a fact and
+   not an assumption about what either one happens to sit inside. */
+.ace-qol-dmg-plus,
+.ace-qol-dmg-equals,
+.ace-qol-mod-labeled {
+  color: #e8e6e0;
+  font-weight: 700;
+  font-size: 0.85rem;
+  font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+  line-height: 1.2;
+}
+
 .ace-qol-dmg-plus {
-  color: #666; font-size: 0.75rem; margin: 0 1px;
+  margin: 0 1px;
 }
 
 /* ─── Labeled modifier badges ──────────────────────────────────────── */
+/* Its text is declared with the plus and the equals above; this is its shape.
+
+   ⚠️🔴 AND IT IS THE GM HALF OF THE CARD (his rule, 2026-10-06: "On the
+   player's half of a damage card, hide ace-qol-mod-labeled... It does not see a
+   creature's strength, or any other bonus. The GM half still shows the +4 STR.
+   Same rule for every creature bonus on every card, not only this fist.").
+
+   Hidden by default, like the AC and the DC and for the same reason: a card that
+   forgets to ask leaks nothing, and the one render pass turns it on for the GM and
+   for a party member's own chip. The dice and the damage that landed sit beside it
+   and stay public - the table reads 6 bludgeoning and 11 force, it is just not
+   told about the arm that threw it. */
 .ace-qol-mod-labeled {
-  color: #e8e6e0; font-weight: 700; font-size: 0.85rem;
-  display: inline-flex; align-items: center; gap: 2px;
+  display: none;
+  align-items: center; gap: 2px;
+}
+.ace-qol-mod-labeled[data-ace-bonus="show"] {
+  display: inline-flex;
 }
 
 .ace-qol-mod-label {
@@ -1096,8 +1174,9 @@
   color: #e8e6e0; font-weight: 600; font-size: 0.85rem;
 }
 
+/* Its text is declared with the plus and "+4 STR" above; this is its spacing. */
 .ace-qol-dmg-equals {
-  color: #666; margin: 0 4px; font-size: 0.8rem;
+  margin: 0 4px;
 }
 
 /* ─── Subtle in-fiction flavor hint (player-visible) ─────────────────────
@@ -1243,13 +1322,29 @@
   padding: 6px 10px;
   background: linear-gradient(180deg, #0e0e12 0%, #111116 100%);
 }
-/* Each action button must keep its full label on ONE line. If the row
-   can't fit them all side-by-side, flex-wrap above drops the overflow
-   button to its own row at full width. */
+/* ⚠️🔴 THE WORDS ARE NEVER CUT OFF (his rule, 2026-10-06: "If a button's
+   words do not fit on the row, they wrap onto the next row. The button does not
+   grow huge, and the words are not cut off. Same for every button on the card.").
+
+   This said `white-space: nowrap` with `min-width: 0`, which is the two halves of
+   the same bug: the label was forbidden to wrap AND the button was allowed to
+   shrink below it, so on a narrow chat sidebar three buttons on one row simply
+   clipped their own text. The row has always been allowed to wrap; the buttons
+   were never allowed to let it.
+
+   `min-content` is the longest WORD in the label, so a button is never narrower
+   than a whole word, and when it cannot fit at that width the row drops it to the
+   next line. It grows only into space that is already there, which is why it
+   cannot become huge, and the height follows the text instead of boxing it. */
+.ace-qol-damage-card .ace-qol-btn,
 .ace-qol-dmg-actions .ace-qol-btn {
-  white-space: nowrap;       /* never break "APPLY ALL" into "APP LY ALL" */
-  flex: 1 1 88px;            /* allow grow, but floor at 88px before wrapping */
-  min-width: 0;              /* lets flex-shrink work properly inside the row */
+  white-space: normal;
+  overflow-wrap: break-word;
+  flex: 1 1 auto;
+  min-width: min-content;
+  height: auto;
+  min-height: 26px;
+  line-height: 1.25;
 }
 .ace-qol-dmg-actions:first-of-type {
   border-top: 1px solid;
@@ -1531,7 +1626,33 @@
   color: #dfe7f5; font-size: 13.5px; line-height: 1.4;
 }
 .ace-qol-save-cast-line i { color: #6ba4ff; font-size: 13px; margin-right: 5px; }
-.ace-qol-save-cast-line strong { color: #ffffff; font-weight: 700; white-space: nowrap; }
+.ace-qol-save-cast-line strong { color: #ffffff; font-weight: 700; }
+
+/* ⚠️🔴 A NAME IS NEVER ALLOWED TO RUN OFF THE CARD (his rule, 2026-10-05).
+   `white-space: nowrap` sat on every `strong` in this line, so "Aryel (Young Gold
+   Dragon) uses Fire Breath on Red Vortex" was laid out as one unbreakable run
+   wider than the card, and the card's own `overflow: hidden` cut the end off. His
+   words: "Take the nowrap off the whole cast line. The sentence wraps onto as
+   many lines as it needs. No ellipsis, no clipping, not on this card and not on
+   any other card that uses that cast line."
+
+   This is the shared rule, so it reaches every card that draws the cast line and
+   not only the save card. Height is free; a single word longer than the card
+   breaks inside itself rather than disappearing, which is the one case wrapping
+   alone cannot save. The card keeps `overflow: hidden` because that is what holds
+   the header gradient inside the rounded border, and with nothing able to
+   overflow there is nothing left for it to clip.
+   no-wrap-ok: this rule REMOVES nowrap; the declarations below forbid it. */
+.ace-qol-save-cast-line,
+.ace-qol-save-cast-line .ace-qol-save-cast-text,
+.ace-qol-save-cast-line strong,
+.ace-qol-save-cast-line span {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
 
 /* ── Auto-generated "on a failed save" effect hint ── */
 .ace-qol-save-effect-line {
@@ -1880,15 +2001,12 @@
 .ace-qol-save-ovr-x:hover {
   background: rgba(255,82,82,0.25); border-color: #ff5252; color: #fff;
 }
-/* ⚠️ THE SPACER PUSHES HP RIGHT ON A FULL-WIDTH ROW AND MUST NOT SURVIVE A
-   WRAP. `flex: 1` on a wrapping row still eats the remaining space on the first
-   line, which is what we want, but it must never grow so far that it forces the
-   chip onto a line of its own while there is room beside it. Capping the basis
-   at zero lets it fill the gap without inventing one. */
-.ace-qol-save-ovr-spacer {
-  flex: 1 1 0;
-  min-width: 0;
-}
+/* ⚠️ THE SPACER AND THE DAMAGE LINE ARE GONE (2026-10-05). Both belonged to the
+   layout where the damage, a spacer and the hit-point chip shared the button row;
+   that row is the buttons alone now, and the damage and the hit points are the
+   line underneath it. Their rules are deleted rather than kept "in case", because
+   a dead selector is how this row ended up with three competing opinions about
+   where the number goes. */
 .ace-qol-save-ovr {
   padding: 0 7px; font-size: 0.75rem; border-radius: 3px;
   background: rgba(255,255,255,0.06); border: 1px solid #444;
@@ -1896,11 +2014,13 @@
   min-width: 0; text-align: center;
   height: 20px; line-height: 20px; box-sizing: border-box;
 }
-/* Damage number on the override line */
 /* The override sub-line used to SHRINK the damage number back to 0.95rem —
-   that override is what actually produced the "tiny 4". Keep it big here too. */
-.ace-qol-save-ovr-line .ace-qol-save-result-dmg,
-.ace-qol-save-dmg-line .ace-qol-save-result-dmg {
+   that override is what actually produced the "tiny 4". Keep it big here too.
+   ⚠️ THE HIT-POINT LINE IS DELIBERATELY NOT ON THIS LIST. It sets its own 1.2rem
+   up where that line is defined, because it is the one line that carries the hit
+   points beside the number and has to fit both without wrapping. Adding it here
+   would silently win on source order and put the wrap back. */
+.ace-qol-save-ovr-line .ace-qol-save-result-dmg {
   font-size: 1.5rem;
 }
 .ace-qol-save-ovr.ace-qol-save-ovr:hover {
@@ -5403,6 +5523,11 @@
    when game.user.isGM is true on render. */
 .ace-qol-gm-only { display: none; }
 .ace-qol-gm-only[data-ace-gm="true"] { display: flex; }
+/* ⚠️ A GM-ONLY RUN OF TEXT INSIDE A SENTENCE IS NOT A FLEX ROW. The rule above
+   turns every revealed block into a flex container, which is right for a row of
+   buttons and wrong for "Dex +2 = 8" sitting beside a die: as a flex box it
+   becomes its own line. A span says so and keeps its place in the line. */
+span.ace-qol-gm-only[data-ace-gm="true"] { display: inline; }
 
 /* Caster-or-GM gate — the save-spell ROLL DAMAGE button. Hidden by default;
    revealed (data-ace-show) for the GM AND the caster's owning player(s) so a PC
@@ -6931,26 +7056,11 @@ i.ace-douse-tool::after {
   color: #f0e4c0;
 }
 
-/* ── 2. The quiet line ───────────────────────────────────────────────────── */
-.ace-qol-save-quiet {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 12px 8px 12px;
-  min-height: 1.3em;
-  font-size: 14px;
-  color: #a79b7d;
-}
-.ace-qol-save-quiet-formula,
-.ace-qol-save-quiet-dc {
-  color: #a79b7d;
-  font-size: 14px;
-  line-height: 1.35;
-}
-/* The DC half is the GM's: hidden until the render stamps this screen as his. */
-.ace-qol-save-quiet-dc { display: none; }
-.ace-qol-save-quiet-dc[data-ace-gm="true"] { display: inline; }
+/* ── 2. The quiet line is gone (his rule, 2026-10-05) ────────────────────────
+   "Delete the quiet line. 'Dex 10 (+0) = D20 + 0' does not get printed." The
+   builder and all seven of its call sites went with it, so these rules styled
+   nothing. The result row carries the die, the bonus and the total, and has
+   always printed nothing at all for a bonus of zero. */
 
 /* ── 3. The result line ──────────────────────────────────────────────────── */
 .ace-qol-save-math {
@@ -7360,3 +7470,168 @@ i.ace-douse-tool::after {
   line-height: 1.45;
 }
 .ace-perceived-note strong { color: #d4b46a; }
+
+/* ═══ FIRE: the one-line GM notes ═══════════════════════════════════════════
+   A door that burned through, a creature that beat the flames out or failed to.
+   One line, the suite's own dark card, orange for the flame that caused it.
+   ⚠️ NO FIXED HEIGHT AND NO NOWRAP (his standing rule): a creature with a long
+   name and a two-digit check still fits, on as many lines as it needs. */
+.ace-qol-fire-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  row-gap: 4px;
+  padding: 7px 11px;
+  min-height: 1.4em;
+  font-size: 16px;
+  line-height: 1.45;
+  color: #f0e4c0;
+}
+.ace-qol-fire-line i { color: #ff6b3d; font-size: 15px; }
+
+/* ═══ THE BLACK ACE CARD ════════════════════════════════════════════════════
+   ⚠️🔴 EVERY CARD ACE POSTS IS THIS CARD (his rule, 2026-10-06: "That result,
+   and the failure, go on a black ACE card with light text. Not a whisper. Not
+   Foundry's parchment. Every card you post uses that black ACE card. A pale line
+   on the default chat background is not a card.").
+
+   `.ace-qol-card` was a marker class with NO rule behind it: every caller that
+   used it painted its own background inline, and the few that did not - the fire
+   lines, the perception line - came out as pale text straight onto Foundry's own
+   chat paper, which on a whisper is parchment. Unreadable, and not a card at all.
+   The class is a real card now, so anything that wears it is black with light
+   text whether or not its author remembered to say so. The call sites that set
+   their own colour still win on specificity and are untouched. */
+.ace-qol-card {
+  background: #1a1a1e;
+  border: 1px solid rgba(212, 175, 55, 0.45);
+  border-radius: 4px;
+  padding: 9px 12px;
+  color: #f3ead7;
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+}
+.ace-qol-card strong { color: #d4b46a; }
+/* ⚠️ AND IT BEATS FOUNDRY'S WHISPER PAPER. A whispered message is given its own
+   background by the core stylesheet, which shows through anything that does not
+   paint its own. A GM-only line is still a black ACE card. */
+.chat-message.whisper .ace-qol-card { background: #1a1a1e; }
+
+/* ═══ FIRE: the Dexterity check card ════════════════════════════════════════
+   His rule, 2026-10-06: "the black card shows the d20 face with the number, then
+   the total against 10. A 12 that beats 10 is a die the table watched, not a
+   sentence." The die sits with its result, which is the chrome law's own rule.
+   ⚠️ NO FIXED HEIGHT AND NO NOWRAP anywhere in here (his standing rule): a long
+   name and a two-digit total wrap onto as many lines as they need. */
+.ace-qol-fire-card { padding: 10px 12px; }
+.ace-qol-fire-who {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  row-gap: 4px;
+  min-height: 1.4em;
+}
+.ace-qol-fire-face {
+  width: 34px; height: 34px; border-radius: 6px; flex-shrink: 0;
+  object-fit: contain; background: #14120e; border: 1px solid #5b5241;
+}
+.ace-qol-fire-name { font-size: 17px; font-weight: 700; color: #f0e4c0; }
+.ace-qol-fire-what { font-size: 14px; color: #b9a978; }
+.ace-qol-fire-roll {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  row-gap: 4px;
+  margin-top: 8px;
+  min-height: 1.4em;
+}
+/* ⚠️🔴 THE FACE IS THE ROLL, PRINTED ONCE (his rule, 2026-10-06: "The die
+   face is the roll, and the number on that face is not printed again... A 6 that
+   is also the total does not become 6, 6."). The die art carries the number; this
+   line carries only what was ADDED to it and what it is measured against, so with
+   no bonus at all it reads just "vs 10" beside the die. */
+/* The face written out beside the die, which is the whole of the player's
+   arithmetic: a number and a verdict. */
+.ace-qol-fire-face-num { font-size: 26px; font-weight: 800; color: #ffffff; }
+.ace-qol-fire-eq       { font-size: 20px; font-weight: 800; letter-spacing: 0.5px; }
+/* The GM's half of the same line: the bonus and the number it was measured
+   against. It sits after the verdict so it never comes between the die and what
+   the die did. */
+.ace-qol-fire-sum   { font-size: 20px; font-weight: 700; color: #ffffff; }
+.ace-qol-fire-verdict {
+  margin-top: 8px;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.35;
+  min-height: 1.4em;
+}
+
+/* The 1d6 the failure costs, UNDER the check on the same card (his rule,
+   2026-10-06: "A failure puts the 1d6 fire on that same card, under the check...
+   Not a second card."). The row below it is the suite's own damage row, so the
+   quarter, half, 1 and 2 buttons and the hit-point line need no rules here. */
+.ace-qol-fire-burn {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(212, 175, 55, 0.25);
+}
+.ace-qol-fire-burn-dice {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 9px;
+  row-gap: 4px;
+  min-height: 1.4em;
+}
+.ace-qol-fire-burn-formula { font-size: 15px; color: #ff9a9a; }
+/* The damage die, shown once: the number it rolled and nothing repeating it. */
+.ace-qol-fire-burn-face { font-size: 24px; font-weight: 800; color: #ff5c5c; }
+
+/* ⚠️ THE ONE PILL THE TABLE READS (his rule, 2026-10-06: "one orange-red pill,
+   about the size of the red 2 that is there now: 2 fire damage"). Sized to that
+   red 2 it replaces, orange-red on its own dark ground so it reads on this card
+   without borrowing the damage card's type colours. No fixed height and no
+   nowrap: a long type name wraps and the pill grows with it (his standing rule). */
+.ace-qol-fire-hit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  row-gap: 4px;
+  margin-top: 9px;
+}
+.ace-qol-fire-hit-pill {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.25;
+  color: #ff7043;
+  background: rgba(255, 112, 67, 0.14);
+  border: 1px solid rgba(255, 112, 67, 0.45);
+  border-radius: 999px;
+  padding: 3px 14px;
+  min-height: 1.7rem;
+  white-space: normal;
+}
+/* Revealed, the GM's half of this card stacks rather than sitting in a row. */
+.ace-qol-fire-burn.ace-qol-gm-only[data-ace-gm="true"] { display: block; }
+
+/* ═══ A BONUS BELONGS TO A CREATURE ═════════════════════════════════════════
+   His rule, 2026-10-06: "The table does not see a creature's AC, a creature's
+   Dexterity or any other bonus... A character saving against a creature: they see
+   his die, his own bonus."
+
+   Same shape as the AC rule above and for the same reason: hidden by default, so
+   a card that forgets the wrapper leaks nothing, and shown only once the one
+   render pass has decided this screen is entitled to it. A party member's bonus
+   is public to the whole table; a creature's is the GM's. */
+.ace-qol-bonus { display: none !important; }
+.ace-qol-bonus[data-ace-bonus="show"] { display: inline !important; }
+
+/* ⚠️ THE HIT-POINT CHIP IS A CHIP, NOT A FLEX BOX. It is the GM half of the save
+   row (2026-10-06), and the generic reveal turns a revealed block into a flex
+   container, which would drop its own padding and height. It keeps the inline
+   box it has always had, and the damage beside it stays on the same line. */
+.ace-qol-save-result-hp.ace-qol-gm-only[data-ace-gm="true"] { display: inline-block; }

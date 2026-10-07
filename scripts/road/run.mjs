@@ -417,13 +417,15 @@ async function _postAutomaticCard({ item, actor, token, trigger, happened = null
     /* ⚠️ WHO MAY SEE IT (his rule): the creature that took it, the creature
        that caused it, and every GM. Nobody else, and a table with no player
        owner on either side leaves it GM-only. */
-    const seers = new Set((game.users?.filter?.(u => u.isGM) ?? []).map(u => u.id));
-    for (const a of [targetActor, actor]) {
-      for (const u of (game.users ?? [])) {
-        if (u.isGM) continue;
-        if (a?.testUserPermission?.(u, "OWNER")) seers.add(u.id);
-      }
-    }
+    /* ⚠️🔴 THE CARD IS NOT WHISPERED AWAY (his rule, 2026-10-06: "Do not
+       whisper the card away, and do not leave the hidden numbers in the public
+       half."). This built a list of GMs plus the owners of the two creatures and
+       whispered the card to them, which was his rule of 2026-10-05 for the Fire
+       Aura card and is superseded: a whispered card is a card the rest of the
+       table never sees at all, and what they are owed - who did it, the dice, and
+       the damage with its type - is public on every other card in the suite.
+       The hit points and the buttons are the GM half OF THIS CARD and are hidden
+       there, which is where the split belongs. */
 
     const { DamageCardRenderer } = await import("../damage-card-renderer.mjs");
     await DamageCardRenderer.postDamageCard(item, actor, [{
@@ -447,7 +449,6 @@ async function _postAutomaticCard({ item, actor, token, trigger, happened = null
       extras,
       // Not a swing: no CLEAVE, no PUSH.
       offerMeleeExtras: false,
-      whisper: [...seers],
       // Nothing is offered that has already happened: the door landed it above.
       alreadyTaken: landed?.applied
         ? { [tokenDoc?.id ?? token?.id]: hpDelta }
