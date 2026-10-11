@@ -1,8 +1,12 @@
 // ─── ACE QOL — who is allowed to answer a question the GM asked ──────────────
 //
-// ⚠️🔴 FOUNDRY ATTACHES NO TRUSTED SENDER TO A MODULE SOCKET. Every field in a
-// payload, `userId` included, is written by whoever sent it. "Is the sender a
-// GM?" is not a check; a player types the GM's id and passes it.
+// ⚠️🔴 CORRECTED 2026-10-11: FOUNDRY DOES ATTACH A TRUSTED SENDER. PROVEN from the
+// 13.351 server (sockets.mjs, handleCustomSocket): every module socket message is
+// relayed as (data, senderId), and senderId is the user the server authenticated.
+// This file was written believing otherwise and read `payload.userId`, which the
+// sender writes, so a player could type the GM's id and pass. The GM-side listener
+// in ace-qol.mjs now overwrites `userId` with the server's before anything here
+// reads it, so every check below is the server's word.
 //
 // For request/response traffic there IS a real check available, and it is much
 // stronger than ownership: the GM asked ONE specific person, and it remembers

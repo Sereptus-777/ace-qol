@@ -246,6 +246,9 @@ export class ConditionDoor {
         flags[MODULE_ID].repeatingSave = {
           ability: String(repeatingSave.ability).toLowerCase(),
           dc: Number(repeatingSave.dc),
+          // Whose DC it is (road/table-view.mjs): a player character's is the
+          // table's, a creature's stays the GM's. The card is the saver's.
+          casterActorId: caster?.id ?? null,
           trigger: String(repeatingSave.trigger),
           spellName: item?.name ?? null,
           castWorldTime: Number(repeatingSave.castWorldTime ?? game.time?.worldTime ?? 0),

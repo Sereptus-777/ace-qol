@@ -57,7 +57,7 @@ const TABS = [
   { id: "effectspanel", label: "Effects Panel",     icon: "fa-solid fa-list",
     settings: ["enableEffectsPanel", "effectsPanelPosition", "effectsPanelAction", "effectsPanelFor", "effectsPanelShowAuras"] },
   { id: "ui",         label: "UI / Cards",         icon: "fa-solid fa-window-maximize",
-    settings: ["suppressSystemCards", "hideSaveDC", "hideNPCNames", "playersSeeBloodied", "tooltipDelay"] },
+    settings: ["suppressSystemCards", "playersSeeBloodied", "tooltipDelay"] },
   { id: "advanced",   label: "Advanced",           icon: "fa-solid fa-screwdriver-wrench",
     settings: ["enableFlagsSystem", "enableOptionalPrompts", "midiCompatibility", "enableOnUseHooks", "enableOverTimeEffects", "autoApplyOverTimeDamage", "enableSpeedRolls", "enableMergeCard", "debugMode", "situationalNarration"] },
   { id: "tokens",     label: "Tokens",             icon: "fa-solid fa-paw",

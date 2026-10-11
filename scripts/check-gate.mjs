@@ -36,6 +36,8 @@
 
 // Hardcoded rather than imported: an imported const at the top level of a module
 // caught in an import cycle throws at load and takes the whole module with it.
+import { faceOf } from "./face.mjs";
+
 const MODULE_ID = "ace-qol";
 const MODULE_ID_DND = "dnd5e";   // the namespace a concentration effect stores its item under
 const LOG = "ace-qol | CheckGate";
@@ -197,23 +199,39 @@ export class CheckGate {
       return menu ? `${actor.name} chooses one: ${menu[1]}. Do it by hand.` : `${them.name} is ${n}: move it by hand.`;
     });
 
+    // ⚠️🔴 A CONTEST IS THE SAVE CARD WITH TWO ROWS (his rule, 2026-10-11: "A
+    // contest is that card with two rows, not a new card. The table sees who
+    // won. It does not see the monster's total."). Each side's total is in its
+    // own row's wrapper; the word is WON or LOST.
     const esc = (s) => foundry.utils.escapeHTML(String(s ?? ""));
-    const row = (text, extra = "") => `<div style="font-size:16px;line-height:1.4;${extra}">${text}</div>`;
-    const html = `<div class="ace-qol-contest-card" style="background:#15121b;border:1px solid #6b4fa8;border-left:3px solid #d4af37;border-radius:6px;padding:10px 12px;color:#ece6f7;">
-      <div style="font-size:18px;font-weight:700;line-height:1.3;">${esc(item.name)}: a contest</div>
-      ${row(`${esc(actor.name)}'s ${esc(a.label)}: <strong style="font-size:20px;">${totA}</strong>`, "margin-top:4px;")}
-      ${row(`${esc(them.name)}'s ${esc(b.label)}: <strong style="font-size:20px;">${totB}</strong>`)}
-      ${luckNotes.map(t => row(`<i class="fas fa-clover"></i> ${esc(t)}`, "color:#7fd08a;")).join("")}
-      ${row(stood ? `${esc(them.name)} holds its ground.` : `${esc(them.name)} loses.`, `margin-top:6px;color:${stood ? "#cfc4ea" : "#ffd87a"};`)}
-      ${put.length ? row(`Put on: <strong>${esc(put.join(", "))}</strong>.`) : ""}
-      ${notPut.length ? row(`Not put on: ${esc(notPut.join("; "))}.`, "color:#e8c46a;") : ""}
-      ${byHand.map(t => row(esc(t), "color:#cfc4ea;")).join("")}
-    </div>`;
-    await CardDoor.post({
-      speaker: ChatMessage.getSpeaker({ actor }),
-      content: html,
-      flags: { [MODULE_ID]: { type: "contestResult", itemUuid: item.uuid ?? null, actorId: actor.id ?? null,
-        targetActorId: them.id ?? null, rolled: [totA, totB], held: stood, put } },
+    const { naturalD20: _face } = await import("./rolldata-utils.mjs");
+    const rowOf = (who, s, r, tot, won) => ({
+      tokenDocId: who?.token?.id ?? who?.getActiveTokens?.()?.[0]?.document?.id ?? who?.id ?? "",
+      actorId: who?.id ?? null,
+      name: `${esc(who?.token?.name ?? who?.name ?? "?")} <span style="opacity:.75;font-weight:400;">(${esc(s.label)})</span>`,
+      img: faceOf(who),
+      dieResult: _face(r), saveTotal: tot,
+      verdictText: won ? "WON" : "LOST", passed: won,
+      saveAdvantage: s.mode > 0, saveDisadvantage: s.mode < 0,
+    });
+    const said = (text, color = "") => `<div class="ace-qol-save-landed"${color ? ` style="color:${color};"` : ""}>${text}</div>`;
+    const after = [
+      ...luckNotes.map(t => said(`<i class="fas fa-clover"></i> ${esc(t)}`, "#7fd08a")),
+      said(stood ? `${esc(them.name)} holds its ground.` : `${esc(them.name)} loses.`),
+      put.length ? said(`Put on: <strong>${esc(put.join(", "))}</strong>.`) : "",
+      notPut.length ? said(`Not put on: ${esc(notPut.join("; "))}.`, "#e8c46a") : "",
+      ...byHand.map(t => said(esc(t))),
+    ].join("");
+    const { SaveEngine: _SE } = await import("./save-engine.mjs");
+    await CheckGate._postCheckCard({
+      actor, label: item.name,
+      line: _SE.castLineHtml(actor, item.name, esc(them.token?.name ?? them.name), { isSpell: false }),
+      rows: [rowOf(actor, a, ra, totA, !stood), rowOf(them, b, rb, totB, stood)],
+      extra: `<div class="ace-qol-contest-after">${after}</div>`,
+      flags: { type: "contestResult", itemUuid: item.uuid ?? null, actorId: actor.id ?? null,
+        targetActorId: them.id ?? null, held: stood, put,
+        // Each side's total is its own creature's (road/table-view.mjs reads whose).
+        sides: [{ actorId: actor.id ?? null, total: totA }, { actorId: them.id ?? null, total: totB }] },
     });
     console.log(`${LOG} | ${item.name}: ${actor.name}'s ${a.label} ${totA} against ${them.name}'s ${b.label} ${totB}; `
       + `${stood ? `${them.name} held` : `${them.name} lost`}${put.length ? `, ${put.join(", ")} put on` : ""}.`);
@@ -1260,51 +1278,47 @@ export class CheckGate {
     }
   }
 
-  /** "6 on the die, +5 Constitution = 11", in the card's words. */
-  static _breakdownHtml(b) {
+  /**
+   * "6 on the die, +5 Constitution = 11", in the card's words.
+   *
+   * ⚠️🔴 IT IS THE ROLLER'S, NOT THE TABLE'S (his rule, 2026-10-11: check-gate
+   * "prints '+5 Constitution' in the line and again in the subtitle"). The whole
+   * sentence sits in the roller's bonus wrapper, so road/table-view.mjs sends it
+   * only to that creature's owners and the GM. The table sees the die.
+   */
+  static _breakdownHtml(b, whose = null) {
     if (!b || !b.parts.length) return "";
     const esc = foundry.utils.escapeHTML;
     const sign = (n) => `${n >= 0 ? "+" : "\u2212"}${Math.abs(n)}`;
     const bits = b.parts.map(p => `${sign(p.value)} ${esc(p.label)}`).join(", ");
-    return `<div style="font-size:16px;margin-top:4px;line-height:1.35;">`
-      + `<span style="font-weight:700;">${esc(String(b.kept))}</span> on the die, ${bits} `
-      + `= <span style="font-weight:700;">${esc(String(b.total))}</span></div>`;
+    const line = `<span style="font-weight:700;">${esc(String(b.kept))}</span> on the die, ${bits} `
+      + `= <span style="font-weight:700;">${esc(String(b.total))}</span>`;
+    const id = whose ? ` data-bonus-actor="${esc(String(whose))}"` : "";
+    return `<div class="ace-qol-bonus ace-qol-check-made-of"${id} `
+      + `style="font-size:16px;margin-top:4px;line-height:1.35;">${line}</div>`;
   }
 
   /**
-   * ACE's card for a check or a save.
+   * ACE's card for a check or a save. IT IS THE SAVE CARD (his rule, 2026-10-11:
+   * "One card for a save, a skill, a tool, an ability check, concentration, a
+   * death save, the check to beat out a fire, and a contest.").
    *
-   * ⚠️ EVERY DIE IS SHOWN, INCLUDING THE ONE THAT LOST. On advantage or
-   * disadvantage two d20s are rolled and one is discarded; showing only the
-   * survivor hides the whole reason the pause existed. The loser is struck
-   * through and dimmed and keeps its full width — a struck number squeezed into
-   * a narrow column is how a 10 once read as a 1 over a 0.
+   * The save card's own shell, its own top line, and its own row: the d20 face
+   * that was kept, the bonus and the total in the roller's wrapper, the word. The
+   * table sees the die and the word; the roller's owners and the GM see the rest.
+   * What used to be this card's own layout (a gold title, "+5 Constitution" in the
+   * subtitle and again in the line, a 30px total) is gone with it.
    *
-   * ⚠️ AND IT WAITS FOR THE DICE. Nothing else is animating this roll, so ACE
-   * throws the dice itself and holds the card until they stop. A card that
-   * beats its own dice is a spoiler.
+   * ⚠️ EVERY DIE IS SHOWN AS IT FELL. Advantage or disadvantage is a tag on the
+   * row, as on every save, with the reason the sheet gave.
    *
-   * ⚠️ PUBLIC. The table needs to see a check; that is the entire point of it.
-   * Foundry's core roll mode is a sticky global and must not get a vote.
+   * ⚠️ AND IT WAITS FOR THE DICE (in _postCheckCard). A card that beats its own
+   * dice is a spoiler.
    */
   static async postCard(actor, read, choice, roll, dc = null, luck = null) {
     const esc = foundry.utils.escapeHTML;
     // A luck point spent on this roll (2014 Lucky) changes the d20 it keeps.
     const total = Number.isFinite(Number(luck?.total)) ? Number(luck.total) : Number(roll?.total);
-
-    const badge = choice === "advantage"
-      ? `<span style="color:#7ee081;font-weight:700;font-size:14px;letter-spacing:0.5px;">ADVANTAGE</span>`
-      : choice === "disadvantage"
-      ? `<span style="color:#e08b7e;font-weight:700;font-size:14px;letter-spacing:0.5px;">DISADVANTAGE</span>`
-      : "";
-
-    // ⚠️ `Number(null)` IS 0. A check that carries no single modifier (a
-    // concentration check, a death save) printed "+0" beside a roll with +5 in
-    // it. Only a number that is really there is shown, and what made the total
-    // is spelled out below either way.
-    const hasMod = read.modifier !== null && read.modifier !== undefined && Number.isFinite(Number(read.modifier));
-    const mod = hasMod
-      ? `<span style="opacity:0.8;">${Number(read.modifier) >= 0 ? "+" : ""}${Number(read.modifier)}</span>` : "";
     let keptD20 = null;
     try {
       const { naturalD20 } = await import("./rolldata-utils.mjs");
@@ -1312,46 +1326,79 @@ export class CheckGate {
     } catch (err) {
       console.warn(`${LOG} | could not read the die ${actor?.name} kept:`, err);
     }
-    const madeOf = CheckGate._breakdownHtml(CheckGate._breakdown(actor, read, keptD20, total));
+    const madeOf = CheckGate._breakdownHtml(CheckGate._breakdown(actor, read, keptD20, total), actor?.id ?? null);
 
-    // Only a save has something to pass or fail against. A check has no DC until
+    // Only a roll against a number has a verdict. A check has no DC until
     // somebody sets one, and inventing a verdict for it would be a lie.
-    let verdict = "";
-    if (Number.isFinite(dc) && Number.isFinite(total)) {
-      const made = total >= Number(dc);
-      verdict = `<div style="margin-top:6px;"><span style="font-size:16px;font-weight:700;`
-        + `color:${made ? "#7ee081" : "#e08b7e"};">`
-        + `${made ? "SUCCESS" : "FAILURE"} <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}">vs DC ${esc(String(dc))}</span></span></div>`;
-    }
+    const hasDC = Number.isFinite(dc) && Number.isFinite(total);
 
-    // ⚠️ A DEATH SAVE'S RESULT IS THE TALLY, NOT THE NUMBER. "17 versus DC 10"
-    // says nothing a table cares about; two successes and one failure is the
-    // whole tension of the moment. Read AFTER the roll, because `rollDeathSave`
-    // has already written the new count by the time we get here.
+    // ⚠️ A DEATH SAVE'S RESULT IS THE TALLY, NOT THE NUMBER. Read AFTER the roll,
+    // because `rollDeathSave` has already written the new count by now.
     let tally = "";
     if (read.kind === "death") {
       const d = actor.system?.attributes?.death ?? {};
       const clamp = (n) => Math.max(0, Math.min(3, Number(n) || 0));
       const pips = (n) => "●".repeat(n) + "○".repeat(3 - n);
-      tally = `<div style="font-size:16px;margin-top:6px;display:flex;flex-wrap:wrap;gap:14px;">`
+      tally = `<div class="ace-qol-save-landed" style="display:flex;flex-wrap:wrap;gap:14px;">`
         + `<span style="color:#7ee081;">Successes ${pips(clamp(d.success))}</span>`
         + `<span style="color:#e08b7e;">Failures ${pips(clamp(d.failure))}</span></div>`;
     }
 
-    const why = read.reasons.length
-      ? `<div style="font-size:14px;opacity:0.85;margin-top:6px;line-height:1.35;">`
-        + `${esc(read.reasons.map(r => r.reason).join(" • "))}</div>`
-      : "";
+    const reasons = (read.reasons ?? []).map(r => String(r?.reason ?? "")).filter(Boolean);
+    const row = {
+      tokenDocId: actor?.token?.id ?? actor?.getActiveTokens?.()?.[0]?.document?.id ?? actor?.id ?? "",
+      actorId: actor?.id ?? null,
+      name: esc(actor?.token?.name ?? actor?.name ?? "?"),
+      img: faceOf(actor),
+      dieResult: keptD20,
+      saveTotal: Number.isFinite(total) ? total : null,
+      passed: hasDC ? total >= Number(dc) : null,
+      saveAdvantage: choice === "advantage",
+      saveDisadvantage: choice === "disadvantage",
+      saveAdvReasons: choice === "advantage" ? reasons.filter(r => /advantage$/i.test(r) && !/disadvantage$/i.test(r)) : [],
+      saveDisadvReasons: choice === "disadvantage" ? reasons.filter(r => /disadvantage$/i.test(r)) : [],
+      luck: luck?.note ? String(luck.note) : null,
+      extraHtml: madeOf + tally,
+    };
+    await CheckGate._postCheckCard({ actor, roll, label: read.label, rows: [row],
+      dcText: hasDC ? `DC ${dc}` : "", flags: { checkCard: true, actorId: actor?.id ?? null } });
+  }
 
-    const luckLine = luck?.note
-      ? `<div style="font-size:16px;margin-top:6px;color:#7fd08a;"><i class="fas fa-clover"></i> ${esc(String(luck.note))}</div>`
-      : "";
-    await CheckGate._postCard({
-      actor, roll, flag: "checkCard", label: read.label,
-      title: read.label,
-      subtitle: `<span>${esc(read.label)} ${mod}</span>${badge}`,
-      extra: madeOf + luckLine + verdict + tally + why,
-      total: Number.isFinite(total) ? total : null,
-    });
+  /**
+   * Post a check through the save card's shell: its top line and its rows.
+   * One function for the single check and the contest, so neither keeps a layout
+   * of its own.
+   */
+  static async _postCheckCard({ actor, roll = null, label = "", rows = [], dcText = "", line = null,
+    extra = "", flags = {} }) {
+    try {
+      if (roll) {
+        const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
+        safeShowForRoll(roll, `${actor?.name ?? "?"} ${label}`);
+        await awaitDiceSettle();
+      }
+      const { SaveEngine } = await import("./save-engine.mjs");
+      const top = line ?? SaveEngine.castLineHtml(actor, label, "", {
+        verb: "rolls", dcText, rollers: rows.map(r => r.actorId).filter(Boolean),
+        // A DC on a check is whoever called for it, which is the GM's.
+        dcWhose: null });
+      const body = rows.map(r => SaveEngine.saveResultRowHtml(r, { formulaOnShell: true })).join("");
+      const { CardDoor } = await import("./road/doors.mjs");
+      await CardDoor.post({
+        speaker: ChatMessage.getSpeaker({ actor }),
+        rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
+        // ⚠️ NO `rolls` ARRAY. The dice were thrown above; handing them to the
+        // message as well makes Dice So Nice animate the same roll a second time.
+        content: `<div class="ace-qol-save-results-card ace-qol-save-shell ace-qol-check-card" data-ace-save-shell="1">`
+          + top
+          + `<div class="ace-qol-save-results">${body}</div>`
+          + extra
+          + `</div>`,
+        flags: { [MODULE_ID]: { type: "checkResult", ...flags } },
+      });
+    } catch (err) {
+      console.error(`${LOG} | could not post the card for ${label}:`, err);
+      ui.notifications?.warn(`${actor?.name ?? "That creature"} rolled, but no card could be posted.`);
+    }
   }
 }

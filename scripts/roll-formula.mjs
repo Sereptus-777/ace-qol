@@ -476,19 +476,29 @@ export function rolledLineText(parts) {
  * under is a saving throw and says so three times over; a chip repeating it is
  * the fourth.
  */
-export function rolledPill(parts) {
+/* ⚠️🔴 A FORMULA IS A BONUS, AND IT SAYS WHOSE (his rule, 2026-10-11: "roll-
+   formula.mjs draws 'Dexterity +5' and 'Proficiency +3' outside the bonus
+   wrapper. A Fireball uses the same save card and does not teach the table the
+   bonus."). The pill names the creature it belongs to, and road/table-view.mjs
+   leaves a player character's on the card (his rule, the same morning: "A player
+   character's formula and DC are not a secret") and sends a creature's to the GM
+   only. A pill that names nobody is the GM's alone. */
+const whoseAttr = (whose) => whose
+  ? ` data-bonus-actor="${foundry.utils.escapeHTML(String(whose))}"` : "";
+
+export function rolledPill(parts, whose = null) {
   const inner = rolledLineHtml(parts);
   if (!inner) return "";
-  return `<div class="ace-qol-formula-pill ace-qol-formula-rolled">`
+  return `<div class="ace-qol-formula-pill ace-qol-formula-rolled"${whoseAttr(whose)}>`
     + `<span class="ace-qol-formula-text">${inner}</span>`
     + `</div>`;
 }
 
-export function formulaPill(parts, { total = null, label = "" } = {}) {
+export function formulaPill(parts, { total = null, label = "", whose = null } = {}) {
   const text = formulaText(parts, total);
   if (!text) return "";
   const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
-  return `<div class="ace-qol-formula-pill">`
+  return `<div class="ace-qol-formula-pill"${whoseAttr(whose)}>`
     + (label ? `<span class="ace-qol-formula-label">${esc(label)}</span>` : "")
     + `<span class="ace-qol-formula-text">${esc(text)}</span>`
     + `</div>`;

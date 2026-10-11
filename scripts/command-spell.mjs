@@ -117,7 +117,8 @@ export class CommandSpell {
       // decide a rule against the caster.
       if (caster) {
         try {
-          const Lang = await import("/modules/ace-engine/scripts/npc/language-barrier.mjs");
+          // A route-prefixed host serves modules under its prefix; a bare "/modules/" 404s there.
+          const Lang = await import(foundry.utils.getRoute("modules/ace-engine/scripts/npc/language-barrier.mjs"));
           const theirs = new Set((Lang.readLanguages?.(target) ?? []).map(x => String(x).toLowerCase()));
           const casterSpeaks = (Lang.speakableLanguages?.(caster) ?? []).map(x => String(x).toLowerCase());
           if (theirs.size && casterSpeaks.length && !casterSpeaks.some(l => theirs.has(l))) {

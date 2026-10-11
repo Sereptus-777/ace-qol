@@ -5528,6 +5528,9 @@
    buttons and wrong for "Dex +2 = 8" sitting beside a die: as a flex box it
    becomes its own line. A span says so and keeps its place in the line. */
 span.ace-qol-gm-only[data-ace-gm="true"] { display: inline; }
+/* A GM-only block that is a column of lines, not a row of buttons. */
+.ace-qol-save-notes.ace-qol-gm-only[data-ace-gm="true"],
+div.ace-qol-gm-only.ace-qol-block[data-ace-gm="true"] { display: block; }
 
 /* Caster-or-GM gate — the save-spell ROLL DAMAGE button. Hidden by default;
    revealed (data-ace-show) for the GM AND the caster's owning player(s) so a PC
@@ -6642,6 +6645,18 @@ span.ace-qol-gm-only[data-ace-gm="true"] { display: inline; }
    being cut in half — which is what Johnny asked for: give each calculation its
    own row and bump the next one down, never shrink it to fit. */
 .ace-qol-dmg-gm-controls { min-width: 0; }
+/* ⚠️🔴 THE GM'S HALF OF A DAMAGE ROW IS HIDDEN HERE, NOT IN A HOOK (his rule,
+   2026-10-11: "Hide that class in the stylesheet the way ace-qol-gm-only is
+   already hidden, and let the GM render turn it back on"). damage-engine and
+   overtime-engine each set `display: none` on it from a render hook for
+   non-GMs, which a card drawn by any other path never got. It is not even on a
+   player's copy now (road/table-view.mjs cuts it before the card is sent); this
+   rule is what keeps it shut on the GM's screen until the chrome pass marks it.
+   `!important` because the button rows give it a display of their own. */
+.ace-qol-dmg-gm-controls:not([data-ace-gm="true"]) { display: none !important; }
+/* The GM's numbers for a card posted on another computer stay there (each
+   screen keeps its own; road/table-view.mjs). Said, never silent. */
+.ace-qol-table-missing { margin-top: 4px; font-size: 14px; font-style: italic; color: #a8a29a; }
 /* ⚠️ EVERY ROW WRAPS, AND ONLY THE BUTTONS REFUSE TO BREAK. `nowrap` on
    every child of every row is what stopped the total and the HP readout from
    giving way when the chat log is narrow. A button legend must not break; a
@@ -7519,104 +7534,8 @@ i.ace-douse-tool::after {
    paint its own. A GM-only line is still a black ACE card. */
 .chat-message.whisper .ace-qol-card { background: #1a1a1e; }
 
-/* ═══ FIRE: the Dexterity check card ════════════════════════════════════════
-   His rule, 2026-10-06: "the black card shows the d20 face with the number, then
-   the total against 10. A 12 that beats 10 is a die the table watched, not a
-   sentence." The die sits with its result, which is the chrome law's own rule.
-   ⚠️ NO FIXED HEIGHT AND NO NOWRAP anywhere in here (his standing rule): a long
-   name and a two-digit total wrap onto as many lines as they need. */
-.ace-qol-fire-card { padding: 10px 12px; }
-.ace-qol-fire-who {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 9px;
-  row-gap: 4px;
-  min-height: 1.4em;
-}
-.ace-qol-fire-face {
-  width: 34px; height: 34px; border-radius: 6px; flex-shrink: 0;
-  object-fit: contain; background: #14120e; border: 1px solid #5b5241;
-}
-.ace-qol-fire-name { font-size: 17px; font-weight: 700; color: #f0e4c0; }
-.ace-qol-fire-what { font-size: 14px; color: #b9a978; }
-.ace-qol-fire-roll {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 9px;
-  row-gap: 4px;
-  margin-top: 8px;
-  min-height: 1.4em;
-}
-/* ⚠️🔴 THE FACE IS THE ROLL, PRINTED ONCE (his rule, 2026-10-06: "The die
-   face is the roll, and the number on that face is not printed again... A 6 that
-   is also the total does not become 6, 6."). The die art carries the number; this
-   line carries only what was ADDED to it and what it is measured against, so with
-   no bonus at all it reads just "vs 10" beside the die. */
-/* The face written out beside the die, which is the whole of the player's
-   arithmetic: a number and a verdict. */
-.ace-qol-fire-face-num { font-size: 26px; font-weight: 800; color: #ffffff; }
-.ace-qol-fire-eq       { font-size: 20px; font-weight: 800; letter-spacing: 0.5px; }
-/* The GM's half of the same line: the bonus and the number it was measured
-   against. It sits after the verdict so it never comes between the die and what
-   the die did. */
-.ace-qol-fire-sum   { font-size: 20px; font-weight: 700; color: #ffffff; }
-.ace-qol-fire-verdict {
-  margin-top: 8px;
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.35;
-  min-height: 1.4em;
-}
-
-/* The 1d6 the failure costs, UNDER the check on the same card (his rule,
-   2026-10-06: "A failure puts the 1d6 fire on that same card, under the check...
-   Not a second card."). The row below it is the suite's own damage row, so the
-   quarter, half, 1 and 2 buttons and the hit-point line need no rules here. */
-.ace-qol-fire-burn {
-  margin-top: 10px;
-  padding-top: 9px;
-  border-top: 1px solid rgba(212, 175, 55, 0.25);
-}
-.ace-qol-fire-burn-dice {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 9px;
-  row-gap: 4px;
-  min-height: 1.4em;
-}
-.ace-qol-fire-burn-formula { font-size: 15px; color: #ff9a9a; }
-/* The damage die, shown once: the number it rolled and nothing repeating it. */
-.ace-qol-fire-burn-face { font-size: 24px; font-weight: 800; color: #ff5c5c; }
-
-/* ⚠️ THE ONE PILL THE TABLE READS (his rule, 2026-10-06: "one orange-red pill,
-   about the size of the red 2 that is there now: 2 fire damage"). Sized to that
-   red 2 it replaces, orange-red on its own dark ground so it reads on this card
-   without borrowing the damage card's type colours. No fixed height and no
-   nowrap: a long type name wraps and the pill grows with it (his standing rule). */
-.ace-qol-fire-hit {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  row-gap: 4px;
-  margin-top: 9px;
-}
-.ace-qol-fire-hit-pill {
-  font-size: 22px;
-  font-weight: 800;
-  line-height: 1.25;
-  color: #ff7043;
-  background: rgba(255, 112, 67, 0.14);
-  border: 1px solid rgba(255, 112, 67, 0.45);
-  border-radius: 999px;
-  padding: 3px 14px;
-  min-height: 1.7rem;
-  white-space: normal;
-}
-/* Revealed, the GM's half of this card stacks rather than sitting in a row. */
-.ace-qol-fire-burn.ace-qol-gm-only[data-ace-gm="true"] { display: block; }
+/* ═══ FIRE: the Dexterity check is the save card, the burn is the damage card
+   (his rule, 2026-10-11). The fire card's own layout and its rules are gone with it. */
 
 /* ═══ A BONUS BELONGS TO A CREATURE ═════════════════════════════════════════
    His rule, 2026-10-06: "The table does not see a creature's AC, a creature's

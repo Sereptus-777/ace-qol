@@ -114,9 +114,15 @@ console.log("\n\u00a7 13.2  A DC IS SHOWN ON THE ROLL THAT NEEDS IT");
   check("the wrapper names the roller, not whoever set the number",
     /data-dc-roller="\$\{esc\(ids\)\}"/.test(utils)
     && !/data-dc-actor/.test(utils), "data-dc-roller");
-  check("Lamia's DC is on the header, for the creatures rolling against it",
-    /dcSpan\(` \u00b7 \$\{dcText\}`, rollers, "ace-qol-save-cast-dc"\)/.test(save)
-    && /static rollersOn\(results\)/.test(save), "Jeth reads it");
+  // ⚠️ REVERSED 2026-10-11 (his rule: "They do not see a bonus, a DC... Their own
+  // spell still shows their own formula and their own DC."). § 13.2 had Jeth read
+  // Lamia's 13. The header's DC is wrapped as its CASTER's now, so the one
+  // function (road/table-view.mjs) keeps a creature's on the GM's screen only and
+  // leaves a player character's on the card for the table (his rule, the same
+  // morning: "A player character's formula and DC are not a secret").
+  check("Lamia's DC on the header is Lamia's, not the creatures rolling against it",
+    /dcSpan\(` \u00b7 \$\{dcText\}`, rollers, "ace-qol-save-cast-dc",\s*\{ whose: dcWhose === undefined \? \(casterActor\?\.id \?\? null\) : dcWhose \}\)/.test(save),
+    "Lamia's is the GM's; a player character's is the table's");
   // His own wording, 2026-09-30: "The whispered prompt is 'Roll a Wisdom save
   // (DC 13)'." The DC after the save, in brackets, not in front of the ability.
   check("and the whispered prompt shows it to the person rolling",
@@ -133,9 +139,12 @@ console.log("\n\u00a7 13.3  A MONSTER'S AC IS NEVER ON A CARD");
   check("an AC has its own wrapper, asking a different question",
     /export function acSpan\(text, whose = null/.test(utils)
     && /data-ac-actor="\$\{esc\(whose\)\}"/.test(utils), "whose sheet, not who rolls");
-  check("revealed to the GM and to the creature's own owner",
-    /const mine = game\.user\?\.isGM \|\| \(!!id && !!game\.actors\?\.get\(id\)\?\.isOwner\);/.test(utils),
-    "their own AC is on their own sheet");
+  // ⚠️ 2026-10-11 (his rule: "A player character's AC and hit points stay on my
+  // screen, same as a creature's."). The one function (road/table-view.mjs) cuts
+  // every AC from every player's copy; this shows it on the GM's screen only.
+  check("revealed to the GM and to nobody else, a party member's included",
+    /const mine = !!game\.user\?\.isGM;\s*if \(mine\) el\.dataset\.aceAc = "show";/.test(utils),
+    "the GM's screen only");
   check("the to-hit card's AC goes through it",
     /acSpan\(`AC \$\{r\.effectiveAC\} \+\$\{r\.effectiveAC - r\.ac\}`, _acWhose\)/.test(attack)
     && /acSpan\(`AC \$\{r\.ac\}`, _acWhose\)/.test(attack), "every swing printed it before");

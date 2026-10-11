@@ -310,7 +310,9 @@ export class DamageApplicator {
             <strong>${actor.name}</strong> ${passed ? "held" : "lost"} concentration on <em>${concName}</em>.
           </div>
           <div style="font-size:12px;color:#c0b288;">
-            Save: <strong>${total}</strong> vs DC <strong>${dc}</strong> — ${passed ? "SUCCESS" : "FAIL"}
+            ${passed ? "SUCCESS" : "FAIL"}
+            ${/* the total and the DC are the GM's (his rule, 2026-10-11) */ ""}
+            <span class="ace-qol-gm-only">(save <strong>${total}</strong> vs DC <strong>${dc}</strong>)</span>
           </div>
         </div>
       `;
@@ -321,6 +323,8 @@ export class DamageApplicator {
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,
           rolls: [roll],
+          // An ACE card, so the one function cuts the roll down to its dice.
+          flags: { [MODULE_ID]: { type: "concentrationResult", actorId: actor?.id ?? null } },
         });
       } catch (err) {
         console.warn(`${MODULE_ID} | the concentration result card for ${actor.name} could not be posted:`, err);

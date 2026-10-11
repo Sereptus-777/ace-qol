@@ -154,6 +154,10 @@ export class HealCardRenderer {
         <img class="ace-qol-heal-card-target-img" src="${t.img}" alt="" onerror="this.style.display='none'">
         <div class="ace-qol-heal-card-target-info">
           <div class="ace-qol-heal-card-target-name">${foundry.utils.escapeHTML(t.name)}</div>
+          ${/* ⚠️ HIT POINTS ARE THE GM'S, A PARTY MEMBER'S INCLUDED (his rule,
+               2026-10-11: "A player character's AC and hit points stay on my
+               screen"), the bar included: its widths are the same numbers. */ ""}
+          <div data-ace-secret="gm">
           <div class="ace-qol-heal-card-target-hpline">
             <span class="ace-qol-heal-card-target-hp-before">${before}</span>
             <i class="fas fa-arrow-right ace-qol-heal-card-target-arrow"></i>
@@ -164,6 +168,7 @@ export class HealCardRenderer {
           <div class="ace-qol-heal-card-target-bar">
             <div class="ace-qol-heal-card-target-bar-before" style="width:${beforePct}%"></div>
             <div class="ace-qol-heal-card-target-bar-gain" style="left:${beforePct}%; width:${Math.max(0, afterPct - beforePct)}%"></div>
+          </div>
           </div>
         </div>
         <div class="ace-qol-heal-card-target-action">${appliedBtn}</div>

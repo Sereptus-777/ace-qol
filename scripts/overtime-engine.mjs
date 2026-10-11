@@ -1329,13 +1329,9 @@ export class OverTimeEngine {
       }
     }
 
-    // ── Hide GM controls for non-GM users ──
-    if (!game.user.isGM) {
-      const controls = el.querySelectorAll(".ace-qol-dmg-gm-controls");
-      for (const ctrl of controls) {
-        ctrl.style.display = "none";
-      }
-    }
+    // GM controls: the stylesheet keeps them shut until the chrome pass marks
+    // them on the GM's screen, and a player's copy never had them
+    // (road/table-view.mjs). Not hidden from here (2026-10-11).
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

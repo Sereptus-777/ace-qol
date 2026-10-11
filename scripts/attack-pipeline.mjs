@@ -1286,26 +1286,11 @@ export class AttackPipeline {
               hitDuplicate,
             };
 
-            // Post a brief chat card so the table sees what happened.
-            try {
-              const remainingTxt = newCount === 0 ? "all duplicates destroyed — spell ends" : `${newCount} duplicate${newCount === 1 ? "" : "s"} remaining`;
-              const outcomeTxt = hitDuplicate
-                ? `<strong style="color:#d4af37;">duplicate destroyed</strong> — ${remainingTxt}`
-                : `<strong style="color:#8eebff;">attack misses</strong> — duplicate not struck, ${dupes} duplicate${dupes === 1 ? "" : "s"} remaining`;
-              ChatMessage.create({
-                content: `
-                  <div style="background:linear-gradient(180deg,#1a1416 0%,#241a30 100%);border:2px solid #8eebff;border-radius:6px;padding:8px 10px;color:#cfcfd0;font-size:12px;">
-                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-                      <i class="fas fa-clone" style="color:#8eebff;font-size:16px;"></i>
-                      <strong style="color:#8eebff;text-transform:uppercase;letter-spacing:0.5px;">Mirror Image</strong>
-                    </div>
-                    Attack on <strong>${targetActor.name}</strong> redirected (roll <strong>${redirectVal}</strong> vs threshold ${threshold}+).
-                    Duplicate AC <strong>${duplicateAC}</strong> vs attack <strong>${adjustedAttackTotal}</strong> → ${outcomeTxt}.
-                  </div>
-                `,
-                speaker: ChatMessage.getSpeaker({ actor: targetActor }),
-              }).catch(() => {});
-            } catch (_) { /* non-fatal */ }
+            // ⚠️🔴 NO CARD OF ITS OWN (his rule, 2026-10-11: "Attack. Anything that
+            // rolls to hit, including Mirror Image."). This posted a second card
+            // printing the duplicate's AC and the attack total for the whole
+            // table. The redirect is the attack card's own line now, built from
+            // mirrorImageRedirect; the duplicate's AC is on the GM's half there.
           }
         }
       } catch (err) {
@@ -1481,9 +1466,11 @@ export class AttackPipeline {
       // A bare card beats no card. It carries the totals ACE already resolved,
       // so the table can keep playing while this gets fixed.
       try {
+        // The total and the AC are the GM's even on the fallback (2026-10-11).
+        // dc-ok: inside .ace-qol-gm-only, which road/table-view.mjs cuts from every player's copy.
         const rows = results.map(r =>
-          `${r.name ?? "target"}: ${r.attackTotal ?? "?"} vs AC ${r.effectiveAC ?? r.ac ?? "?"}`
-          + ` — ${String(r.hitResult ?? "?").toUpperCase()}`).join("<br>");
+          `${r.name ?? "target"}: ${String(r.hitResult ?? "?").toUpperCase()}`
+          + `<span class="ace-qol-gm-only"> (${r.attackTotal ?? "?"} vs AC ${r.effectiveAC ?? r.ac ?? "?"})</span>`).join("<br>");
         await ChatMessage.create({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: `<div><strong>${item?.name ?? "Attack"}</strong> `
@@ -1811,14 +1798,23 @@ export class AttackPipeline {
         // i18n: caption pulled from languages/en.json (and any other locale
         // files the user has installed). Falls back to the English literal
         // if the key is missing somehow.
+        //
+        // ⚠️ THE TABLE SEES THE DIE AND WHAT HAPPENED; THE DUPLICATE'S AC AND THE
+        // ATTACK TOTAL ARE THE GM'S (his rule, 2026-10-11). The redirect d20 and
+        // its 6/8/11 are the spell's own rule, not a creature's number.
         const key = mi.hitDuplicate
           ? "ACE_QOL.mirrorImage.redirectHitDestroyed"
           : "ACE_QOL.mirrorImage.redirectHitDodged";
-        const outcome = game.i18n?.format?.(key, { ac: mi.duplicateAC })
-                     ?? (mi.hitDuplicate
-                         ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
-                         : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`);
-        mirrorCaption = `<div class="ace-qol-atk-mirror-caption">→ ${outcome}</div>`;
+        const outcome = game.i18n?.format?.(key, {})
+                     ?? (mi.hitDuplicate ? "Hit a Mirror Image duplicate — duplicate destroyed"
+                                         : "Hit a Mirror Image duplicate — duplicate dodged");
+        const left = mi.duplicatesAfter === 0 ? "the spell ends"
+          : `${mi.duplicatesAfter} duplicate${mi.duplicatesAfter === 1 ? "" : "s"} left`;
+        // dc-ok: the duplicate's AC is inside .ace-qol-gm-only, cut from every player's copy.
+        const dupAC = `<span class="ace-qol-gm-only"> Duplicate AC ${mi.duplicateAC} vs ${r.attackTotal ?? "?"}.</span>`;
+        mirrorCaption = `<div class="ace-qol-atk-mirror-caption">`
+          + `<i class="fas fa-clone"></i> Mirror Image: rolled ${mi.rollResult} (needs ${mi.threshold}+). `
+          + `→ ${outcome}; ${left}.${dupAC}</div>`;
       }
       // Lucky (2026-09-18): what a luck point did to this roll, in words.
       const luckCaption = r.luck
@@ -1835,7 +1831,10 @@ export class AttackPipeline {
           </div>
           ${mirrorCaption}
           ${luckCaption}
-          ${coverTag || tagHtml ? `<div class="ace-qol-atk-tags">${coverTag}${tagHtml}</div>` : ""}
+          ${/* ⚠️🔴 THE TAG ROW IS THE GM'S (his rule, 2026-10-11: "SAVE BONUS, IMMUNE,
+               CONCENTRATING, MAGIC RESISTANCE, and the duplicate's AC stay on the
+               GM's half"). Cover's +N AC is a number about the target's AC. */ ""}
+          ${coverTag || tagHtml ? `<div class="ace-qol-atk-tags ace-qol-gm-only">${coverTag}${tagHtml}</div>` : ""}
         </div>
       `;
     }).join("");

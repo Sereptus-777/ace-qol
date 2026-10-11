@@ -7,8 +7,8 @@
       "weapon":          "Weapon"
     },
     "mirrorImage": {
-      "redirectHitDestroyed": "Hit Mirror Image duplicate (AC {ac}) — duplicate destroyed",
-      "redirectHitDodged":    "Hit Mirror Image duplicate (AC {ac}) — duplicate dodged",
+      "redirectHitDestroyed": "Hit a Mirror Image duplicate — duplicate destroyed",
+      "redirectHitDodged":    "Hit a Mirror Image duplicate — duplicate dodged",
       "label":                "Mirror Image"
     },
     "mastery": {
@@ -40,7 +40,7 @@
         "sap":     "{target} has <strong>Disadvantage</strong> on its next attack roll (before {attacker}'s next turn).",
         "slow":    "{target}'s speed is <strong>reduced by 10 ft</strong> until the start of {attacker}'s next turn.",
         "push":    "{attacker} may <strong>push {target} 10 ft</strong> straight away.",
-        "topple":  "{target} must make a <strong>DC {dc} CON save</strong> or fall <strong>Prone</strong>.",
+        "topple":  "{target} must make a <strong>{dc} CON save</strong> or fall <strong>Prone</strong>.",
         "cleave":  "{attacker} may make a <strong>second attack with {weapon}</strong> against another creature within 5 ft of {target} that's also within their reach. No ability modifier to that damage.",
         "nick":    "{attacker} may make their extra <strong>Light weapon attack</strong> as part of this Attack action (instead of as a Bonus Action).",
         "graze":   "{target} takes <strong>{damage} {type}</strong> damage on the miss (ability modifier)."

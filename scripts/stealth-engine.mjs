@@ -241,8 +241,10 @@ export class StealthEngine {
     await ChatMessage.create({
       speaker: ChatMessage.getSpeaker({ actor }),
       content: `<div class="ace-qol-hide-card">
-        <strong>🕵️ ${actor.name} hides</strong><br/>
-        Stealth: <strong>${total}</strong> (passive Perception below this won't see them)
+        <strong>🕵️ ${actor.name} hides</strong>
+        ${/* the Stealth total is the hider's (his rule, 2026-10-11) */ ""}
+        <span class="ace-qol-bonus" data-bonus-actor="${actor.id}"><br/>
+        Stealth: <strong>${total}</strong> (passive Perception below this won't see them)</span>
       </div>`,
       flags: { [MODULE_ID]: { type: "hideAction", actorId: actor.id, dc: total } },
     });

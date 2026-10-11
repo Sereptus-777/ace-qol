@@ -199,8 +199,8 @@ export class TargetState {
       // Everything above this line asks the TARGET. That is right for nearly
       // all of it — advantage on saves is usually something you have. But a
       // handful of effects live on the other side: Shami-Amourae's dark gift in
-      // the Amber Temple reads *"saving throws against the spell have
-      // disadvantage"*, and there was no way to say that at all.
+      // the Amber Temple makes the TARGET of its spell save at disadvantage,
+      // and there was no way to say that at all.
       //
       // ⚠️ THE ITEM FIRST, THE CREATURE SECOND. `TargetState.assess` already
       // receives the item and the attacker, so this needs no new plumbing. The

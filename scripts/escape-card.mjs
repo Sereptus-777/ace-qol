@@ -74,11 +74,15 @@ export function escapeCardHtml({ name, actorId = "", checkLabel, ability = "",
   /* ⚠️ A DIE NOBODY COULD READ IS NOT A ZERO. Without the face there is no bonus
      to work out either, so the line shows the one number it actually knows
      instead of inventing the other two. */
+  // The die is the table's; the bonus and the total are the escaper's (his rule,
+  // 2026-10-11), in its wrapper: road/table-view.mjs leaves a player character's on the
+  // card and sends a creature's to the GM only.
+  const mine = (html) => `<span class="ace-qol-bonus" data-bonus-actor="${esc(actorId)}">${html}</span>`;
   const formula = (die == null)
-    ? `<b class="ace-qol-escape-total" style="color:${colour};">${sum}</b>`
+    ? mine(`<b class="ace-qol-escape-total" style="color:${colour};">${sum}</b>`)
     : `<b class="ace-qol-escape-die">${Number(die)}</b>`
-      + `<span class="ace-qol-escape-bonus">${_bonusText(sum - Number(die), ability)} =</span>`
-      + `<b class="ace-qol-escape-total" style="color:${colour};">${sum}</b>`;
+      + mine(`<span class="ace-qol-escape-bonus">${_bonusText(sum - Number(die), ability)} =</span>`
+      + `<b class="ace-qol-escape-total" style="color:${colour};">${sum}</b>`);
 
   return `
     <div class="ace-qol-escape-card" style="border-color:${colour}55;">

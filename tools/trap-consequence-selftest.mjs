@@ -202,10 +202,14 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
     // ⚠️ Re-pinned 2026-09-25. "Is there a non-GM owner" was the wrong
     // question and hid his own people's rows from them. The question is whether
     // the person looking owns this creature.
-    check("a row is drawn for whoever owns that creature",
-        /data-owners="\$\{\(target\.ownerUserIds \?\? \[\]\)\.join\(" "\)\}"/.test(beh)
-          && /owners\.includes\(game\.user\.id\)/.test(beh)
-          && /_ownerUserIds\(actor\)/.test(read("trap-pipeline.mjs")));
+    // ⚠️ SUPERSEDED 2026-10-11 (his rule, every card: "A player who does not own the
+    // actor sees the die and the word... A hidden div is not hidden. A render hook
+    // is not hidden."). A row is drawn for the table; its numbers say whose they
+    // are, and road/table-view.mjs leaves a player character's on the card and cuts
+    // a creature's before the card is sent, never hidden by a render hook.
+    check("a row's numbers say whose they are, cut before the card is sent, and no row is hidden in a hook",
+        /data-ace-secret-owner="\$\{_escape\(String\(whose\)\)\}"/.test(beh)
+          && !/row\.style\.display = "none"/.test(beh));
 
     check("and the dice everyone should see are not GM-only",
         /<div class="forge-dmg-block">\s*\n\s*<div class="forge-dmg-roll-section">/.test(beh),
@@ -359,11 +363,14 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
     // 2026-09-25, his table: he pressed "try the walls" on the client and the
     // roll box opened on the GM's screen, because CheckGate opens its box on
     // the client that calls it and the whole climb was being run GM-side.
-    check("the climber rolls his own check, on his own screen",
-        /static async rollTheWalls\(actor\)/.test(pit)
-          && /total = await PitFall\.rollTheWalls\(actor\)/.test(pit)
-          && /total,                    \/\/ already rolled, on the climber's own screen/.test(pit),
-        "a roll belongs to whoever owns the creature");
+    // ⚠️ SUPERSEDED 2026-10-11 (his rule: "Roll the climb on the GM."). The
+    // climber's total was a number anybody could type. The GM rolls with no box,
+    // so the box he refused on his own screen on 09-25 does not come back.
+    check("the GM rolls the climb, with no box, and the climber sends only the choice",
+        /const total = await PitFall\.rollTheWalls\(actor\);/.test(pit)
+          && /choice: "suggested"/.test(pit)
+          && !/already rolled, on the climber's own screen/.test(pit),
+        "the climber's number is never taken");
 
     check("and the GM is sent only what it left",
         /static async resolveClimb/.test(pit)
@@ -415,11 +422,11 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
           && /\.forge-target-consequences \{[\s\S]{0,240}?font-size: 15px;/.test(css),
         "he read the old chips as controls and asked what they were for");
 
-    check("the party's own rows are public, whoever owns the sheet",
-        /data-party="\$\{target\.isCharacter \? "1" : "0"\}"/.test(beh)
-          && /if \(row\.dataset\.party === "1"\) continue;/.test(beh)
-          && /isCharacter:\s*tokenDoc\.actor\?\.type === "character"/.test(read("trap-pipeline.mjs")),
-        "he owns the whole party, so ownership hid his own people from themselves");
+    // Every row is the table's now (2026-10-11), the party's and a monster's alike;
+    // only a creature the table cannot see keeps its whole row on the GM's half.
+    check("every row is public, and a hidden creature's row is the GM's",
+        /data-ace-secret="gm"` : ""\}/.test(beh) && /tokens\?\.get\?\.\(target\.tokenId\)\?\.hidden/.test(beh),
+        "the die and the word, for every creature the table can see");
 
     check("a hole lands prone even when the trap was saved with restrained",
         /if \(fallsIn && wanted === "restrained"\)/.test(read("trap-pipeline.mjs")),

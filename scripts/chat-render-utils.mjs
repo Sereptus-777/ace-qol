@@ -21,6 +21,8 @@
 // ⚠️ USE THIS INSTEAD OF Hooks.on("renderChatMessage"/"renderChatMessageHTML")
 // FOR ANY ACE CHAT CARD. Registering the raw hooks reintroduces the hole.
 
+import { fillRendered, isParty } from "./road/table-view.mjs";
+
 const MODULE_ID = "ace-qol";
 
 /**
@@ -193,13 +195,10 @@ export function registerForeignChatCardHandler(handler, label = "third-party car
  * number is the party's to read out loud rather than the GM's to keep.
  */
 export function isPartyActor(actorId) {
-    try {
-        const actor = actorId ? game.actors?.get(actorId) : null;
-        if (!actor) return false;
-        return (game.users ?? []).some(u => !u.isGM && actor.testUserPermission(u, "OWNER"));
-    } catch (_) {
-        return false;
-    }
+    // ⚠️ ONE TEST (2026-10-11): the one function cuts by it before a card is sent
+    // (road/table-view.mjs), and this pass shows by it. Two copies of the
+    // question would leave a number in a player's copy and hidden.
+    return isParty(actorId);
 }
 
 /**
@@ -265,7 +264,11 @@ export function revealOwnBonuses(root, message = null) {
            Whose bonus it is comes from the chip if it says, and otherwise from the
            creature whose roll the card is about. A party member's own chip stays
            public, because his numbers are read out at the table anyway. */
-        const ofCard = message?.flags?.[MODULE_ID]?.actorId ?? null;
+        // The same chain the one function cut the chip by (road/table-view.mjs
+        // cardActorOf): any ACE module's own actorId, then the speaker.
+        const ofCard = ["ace-qol", "ace-artificer", "ace-engine", "ace-envoy"]
+            .map(ns => message?.flags?.[ns]?.actorId).find(Boolean)
+            ?? message?.speaker?.actor ?? null;
         const decide = (el, id) => {
             const mine = game.user?.isGM || isPartyActor(id);
             if (mine) el.dataset.aceBonus = "show";
@@ -482,7 +485,10 @@ export function revealGmHalf(root) {
     let shown = 0;
     try {
         if (!game.user?.isGM) return { shown: 0 };
-        for (const el of (root?.querySelectorAll?.(".ace-qol-gm-only") ?? [])) {
+        // The damage row's GM controls are the same half by another name; the
+        // stylesheet hides both until this marks them (2026-10-11).
+        // Forge's GM half is the same half again, on Forge's cards (2026-10-11).
+        for (const el of (root?.querySelectorAll?.(".ace-qol-gm-only, .ace-qol-dmg-gm-controls, .forge-gm-only") ?? [])) {
             el.setAttribute("data-ace-gm", "true");
             shown++;
         }
@@ -495,6 +501,9 @@ export function revealGmHalf(root) {
 
 export function registerAceChrome() {
     registerChatCardHandler((message, el) => {
+        // First: the numbers this screen is entitled to, put back where they were
+        // cut (road/table-view.mjs). Everything after reads a whole card.
+        fillRendered(message, el);
         stampAceCard(message, el);
         skinSystemCard(message, el);   // after the stamp: an ACE card is never skinned
         revealOwnDCs(el);
@@ -959,6 +968,11 @@ export function registerScrollAtTheEnd() {
 
    Revealed to the GM always, and to a player who owns that creature, because
    their own AC is on their own sheet.
+
+   ⚠️ 2026-10-11: THE GM'S ALONE, A PARTY MEMBER'S INCLUDED. His rule: "A player
+   character's AC and hit points stay on my screen, same as a creature's." The
+   one function (road/table-view.mjs) cuts every AC from every player's copy
+   before the card is sent; this only shows it on the GM's screen.
    ══════════════════════════════════════════════════════════════════════════ */
 
 /** The wrapper every card puts an AC in. `whose` is the creature it belongs to. */
@@ -973,8 +987,7 @@ export function acSpan(text, whose = null, extraClass = "") {
 export function revealOwnACs(root) {
     try {
         for (const el of (root?.querySelectorAll?.(".ace-qol-ac") ?? [])) {
-            const id = el.dataset?.acActor ?? null;
-            const mine = game.user?.isGM || (!!id && !!game.actors?.get(id)?.isOwner);
+            const mine = !!game.user?.isGM;
             if (mine) el.dataset.aceAc = "show";
             else delete el.dataset.aceAc;
         }

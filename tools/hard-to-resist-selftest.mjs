@@ -3,8 +3,8 @@
 // ⚠️ WHY THIS EXISTS. Every save modifier ACE reads was a property of the
 // TARGET — advantage on saves is normally something you HAVE. A handful of
 // effects sit on the other side of the table: Shami-Amourae's dark gift in the
-// Amber Temple reads *"saving throws against the spell have disadvantage"*, and
-// there was no way to express that at all. Johnny asked for the three
+// Amber Temple makes the TARGET of its spell save at disadvantage, and there
+// was no way to express that at all. Johnny asked for the three
 // sarcophagus gifts built properly on 2026-09-06, drawbacks included, and this
 // was the one clause with nowhere to live.
 //

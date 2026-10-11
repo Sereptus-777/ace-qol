@@ -117,7 +117,9 @@ console.log("\nTHE CHAIN ROW IS THE CHARM PERSON ROW");
   check("the table roll is text on its own line, with no die of its own",
     at > 0 && !/fa-dice/.test(table) && /Rolled <strong>/.test(table), "Rolled 3: Grapple");
   check("and it is added after what landed, not inside the save's row",
-    /\$\{tableLine\}\$\{hpHtml\}/.test(ph), "result, then Prone., then the extra roll");
+    /\+ `\$\{tableLine\}`;/.test(ph), "result, then Prone., then the extra roll");
+  // "post-hit-saves.mjs prints HP current, new, and max... Those come off." (2026-10-11)
+  check("and no hit points are printed under it", !/hpHtml|HP: \$\{currentHP\}/.test(ph), "his rule, 2026-10-11");
 }
 
 /* ══ 3. A REROLL CHANGES THE DIE, NOT JUST THE TOTAL ══════════════════════ */

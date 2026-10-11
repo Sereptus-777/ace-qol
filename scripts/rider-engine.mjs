@@ -820,11 +820,15 @@ export class RiderEngine {
                 await r.evaluate();
                 const bonus = r.total;
                 await RiderEngine._consumeSuperiorityDie(actor);
+                // The die is the table's; the attack total is the attacker's (his
+                // rule, 2026-10-11), so it rides in the attacker's wrapper.
                 ChatMessage.create({
                   content: `<div style="background:linear-gradient(180deg,#1a1416 0%,#241a1d 100%);border:2px solid #d4af37;border-radius:6px;padding:8px 10px;color:#cfcfd0;">
-                    <strong style="color:#ffd87a;">Precision Attack:</strong> ${actor.name} rolled <strong>${data.die} → ${bonus}</strong>. Attack total ${attackTotal} → <strong>${attackTotal + bonus}</strong>.
+                    <strong style="color:#ffd87a;">Precision Attack:</strong> ${actor.name} rolled <strong>${data.die} → ${bonus}</strong>.`
+                    + `<span class="ace-qol-bonus" data-bonus-actor="${actor.id}"> Attack total ${attackTotal} → <strong>${attackTotal + bonus}</strong>.</span>
                   </div>`,
                   speaker: ChatMessage.getSpeaker({ actor }),
+                  flags: { "ace-qol": { type: "precisionAttack", actorId: actor.id } },
                 });
                 safeResolve(bonus);
               } catch (err) {

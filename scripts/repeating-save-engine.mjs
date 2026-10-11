@@ -856,7 +856,8 @@ export class RepeatingSaveEngine {
     // ── A save that keeps score, or happens only once, settles its own way ──
     const conditionLabel = RepeatingSaveEngine._conditionLabelOf(stillPresent);
     const card = { actor, spell, ability, abilityLabel, dc, total: rollTotal, natural, modifier, passed, source,
-                   conditionLabel, casterName: meta.casterName ?? null, luck: luckNote };
+                   conditionLabel, casterName: meta.casterName ?? null, luck: luckNote,
+                   casterActorId: meta.casterActorId ?? null };
     if (meta.tally) return this._resolveTally(actor, stillPresent, meta, card);
     if (meta.once) return this._resolveOnce(actor, stillPresent, meta, card);
 
@@ -886,7 +887,7 @@ export class RepeatingSaveEngine {
       await this._postChatCard({
         actor, spell, ability, abilityLabel, dc,
         total: rollTotal, natural, modifier, passed, luck: luckNote,
-        onFailureApply: null, source, conditionLabel,
+        onFailureApply: null, source, conditionLabel, casterActorId: meta.casterActorId ?? null,
       });
       return false;
     } else {
@@ -919,7 +920,7 @@ export class RepeatingSaveEngine {
           await this._postChatCard({
             actor, spell, ability, abilityLabel, dc,
             total: rollTotal, natural, modifier, passed, luck: luckNote,
-            onFailureApply: escalatedTo, source, conditionLabel,
+            onFailureApply: escalatedTo, source, conditionLabel, casterActorId: meta.casterActorId ?? null,
           });
           return false;
         } catch (err) {
@@ -933,7 +934,7 @@ export class RepeatingSaveEngine {
       await this._postChatCard({
         actor, spell, ability, abilityLabel, dc,
         total: rollTotal, natural, modifier, passed, luck: luckNote,
-        onFailureApply: null, source, conditionLabel,
+        onFailureApply: null, source, conditionLabel, casterActorId: meta.casterActorId ?? null,
       });
       return true;
     }
@@ -980,9 +981,13 @@ export class RepeatingSaveEngine {
       // no roll dice", which left the GM staring at a bare total with no way to
       // tell a real roll from a broken one. Johnny's standing card rule wins.
       const sign = (Number(bonus) || 0) < 0 ? "−" : "+";
+      // The die is the table's; the bonus and the total are this creature's (his
+      // rule, 2026-10-11), in its wrapper.
+      const mine = (html) => `<span class="ace-qol-bonus" data-bonus-actor="${esc(actor?.id ?? "")}">${html}</span>`;
       const working = (bestFace !== null && bestFace !== undefined && bonus !== undefined)
-        ? `<span style="${S.dim}">d20</span> (<b>${esc(bestFace)}</b>) <span style="${S.dim}">${sign}</span> ${Math.abs(Number(bonus) || 0)} <span style="${S.dim}">=</span> <b>${esc(bestTotal)}</b>`
-        : `<b>${esc(bestTotal ?? "—")}</b>`;
+        ? `<span style="${S.dim}">d20</span> (<b>${esc(bestFace)}</b>) `
+          + mine(`<span style="${S.dim}">${sign}</span> ${Math.abs(Number(bonus) || 0)} <span style="${S.dim}">=</span> <b>${esc(bestTotal)}</b>`)
+        : mine(`<b>${esc(bestTotal ?? "—")}</b>`);
 
       let rollLine, noteLine;
       if (noteOverride) {
@@ -995,10 +1000,10 @@ export class RepeatingSaveEngine {
         rollLine = `<div style="${S.roll}"><span style="${S.good}">DURATION ENDED</span></div>`;
         noteLine = `<div style="${S.note}">The spell ran its course — ${esc(actor.name)} is free of it.</div>`;
       } else if (passed) {
-        rollLine = `<div style="${S.roll}">${working} <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"><span style="${S.dim}">vs DC ${esc(dc)}</span></span> — <span style="${S.good}">SUCCESS</span></div>`;
+        rollLine = `<div style="${S.roll}">${working} <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"${meta.casterActorId ? ` data-dc-owner="${esc(meta.casterActorId)}"` : ""}><span style="${S.dim}">vs DC ${esc(dc)}</span></span> — <span style="${S.good}">SUCCESS</span></div>`;
         noteLine = `<div style="${S.note}">Broke free on ${attempts === 1 ? "the first attempt" : `attempt ${esc(passOnAttempt)} of ${esc(attempts)}`}, out of combat.</div>`;
       } else {
-        rollLine = `<div style="${S.roll}">${working} <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"><span style="${S.dim}">vs DC ${esc(dc)}</span></span> — <span style="${S.bad}">HELD</span></div>`;
+        rollLine = `<div style="${S.roll}">${working} <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"${meta.casterActorId ? ` data-dc-owner="${esc(meta.casterActorId)}"` : ""}><span style="${S.dim}">vs DC ${esc(dc)}</span></span> — <span style="${S.bad}">HELD</span></div>`;
         noteLine = `<div style="${S.note}">${attempts === 1 ? "One attempt" : `${esc(attempts)} attempts`} out of combat, best roll shown. Still affected.</div>`;
       }
 
@@ -1018,6 +1023,8 @@ export class RepeatingSaveEngine {
           [MODULE_ID]: {
             type: "repeatingSaveOocSummary",
             actorId: actor.id,
+            // ⚠️ THE DC IS THE CASTER'S, NOT THE SAVER'S (see the repeat-save card).
+            casterActorId: meta.casterActorId ?? null,
             spell, ability, dc, attempts, passed, bestTotal,
           },
         },
@@ -1201,7 +1208,8 @@ export class RepeatingSaveEngine {
   }
 
   static async _postChatCard({ actor, spell, ability, abilityLabel, dc, total, natural, modifier, passed, onFailureApply, source,
-                               conditionLabel = "the effect", footerHtml = null, casterName = null, luck = null }) {
+                               conditionLabel = "the effect", footerHtml = null, casterName = null, luck = null,
+                               casterActorId = null }) {
     // SAME look as the regular save card (Johnny 2026-07-27: "it still is just a
     // save card — why did you make up a new format?"). Black-gold d20 face from
     // the save engine's own helper, "raw = total" in result colors, PASS/FAIL
@@ -1224,18 +1232,21 @@ export class RepeatingSaveEngine {
       const html = `
         <div class="ace-qol-rsv2">
           <div class="ace-qol-rsv2-head">
-            <i class="fas fa-hourglass-half"></i>&nbsp;<b>${spell}</b>&nbsp;— repeating ${abilityLabel} save<span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}">, DC ${dc}</span>
+            <i class="fas fa-hourglass-half"></i>&nbsp;<b>${spell}</b>&nbsp;— repeating ${abilityLabel} save<span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"${casterActorId ? ` data-dc-owner="${casterActorId}"` : ""}>, DC ${dc}</span>
             <span class="ace-qol-rsv2-src">${sourceLabel}</span>
           </div>
           <div class="ace-qol-rsv2-row">
             ${aceD20FaceImg(Number.isFinite(natural) ? natural : total, { size: 46 })}
             <span class="ace-qol-rsv2-name">${actor.name}</span>
-            <span class="ace-qol-rsv2-math"><span class="${numCls}">${Number.isFinite(natural) ? natural : "—"}</span>${
+            <span class="ace-qol-rsv2-math"><span class="${numCls}">${Number.isFinite(natural) ? natural : "—"}</span>`
+              // ⚠️ THE BONUS AND THE TOTAL ARE THIS CREATURE'S (his rule, 2026-10-11).
+              + `<span class="ace-qol-bonus" data-bonus-actor="${actor?.id ?? ""}">${
               // ⚠️ THE BONUS BETWEEN THEM. "3 = 5" read as false arithmetic on
               // every re-save card (seen in the replay, 2026-09-13).
               (Number.isFinite(natural) && Number.isFinite(modifier) && modifier !== 0)
                 ? ` <span style="color:#9a9a9a;">${modifier < 0 ? "-" : "+"} ${Math.abs(modifier)}</span>` : ""
-            } = <span class="${numCls}">${Number.isFinite(total) ? total : "—"}</span></span>
+            } = <span class="${numCls}">${Number.isFinite(total) ? total : "—"}</span></span></span>`
+            + `
             <span class="ace-qol-rsv2-badge ${passed ? "ace-qol-rsv2-pass" : "ace-qol-rsv2-fail"}">${resultLabel}</span>
           </div>
           ${luck ? `<div class="ace-qol-rsv2-foot" style="color:#7fd08a;"><i class="fas fa-clover"></i> ${foundry.utils.escapeHTML(String(luck))}</div>` : ""}
@@ -1249,6 +1260,9 @@ export class RepeatingSaveEngine {
           [MODULE_ID]: {
             type: "repeatingSave",
             actorId: actor.id,
+            // ⚠️ THE DC IS THE CASTER'S, NOT THE SAVER'S (road/table-view.mjs reads
+            // this; null is a caster nobody recorded, so the DC stays the GM's).
+            casterActorId,
             spell, ability, dc, total, natural, modifier, passed, source,
           },
         },
@@ -1261,7 +1275,8 @@ export class RepeatingSaveEngine {
       try {
         await ChatMessage.create({
           speaker: ChatMessage.getSpeaker({ actor }),
-          content: `<b>${actor.name}</b> — ${spell} re-save: <b>${total}</b> <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}">vs DC ${dc}</span> — <b>${resultLabel}${petrifies ? " → Petrified" : ""}</b>`,
+          content: `<b>${actor.name}</b> — ${spell} re-save: <span class="ace-qol-bonus" data-bonus-actor="${actor?.id ?? ""}"><b>${total}</b></span> <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}">vs DC ${dc}</span> — <b>${resultLabel}${petrifies ? " → Petrified" : ""}</b>`,
+          flags: { [MODULE_ID]: { type: "repeatingSave", actorId: actor.id } },
         });
       } catch (err2) {
         console.error(`${MODULE_ID} | RepeatingSave: even the fallback card failed:`, err2);

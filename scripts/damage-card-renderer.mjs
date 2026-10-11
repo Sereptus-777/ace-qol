@@ -1191,9 +1191,10 @@ export class DamageCardRenderer {
     const existing = el.querySelector(".ace-qol-player-status");
     if (existing) return;
 
-    // Modifier labels are GM-truth — wrapped in `ace-qol-dmg-truth-only` so
-    // the visibility-engine can hide them from non-GM viewers. Players see
-    // only the damage that landed, never an "IMMUNE/RESIST/VULN" label.
+    // Modifier labels are GM-truth — wrapped in `ace-qol-dmg-truth-only`, which
+    // road/table-view.mjs cuts from every player's copy before the card is
+    // sent. Players see only the damage that landed, never an
+    // "IMMUNE/RESIST/VULN" label.
     const MODIFIER_LABELS = {
       immune: { text: "IMMUNE", color: "#ef5350", icon: "fa-shield" },
       resistant: { text: "RESIST", color: "#ffa726", icon: "fa-shield-halved" },

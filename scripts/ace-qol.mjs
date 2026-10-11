@@ -72,7 +72,6 @@ import { OverTimeEngine }       from "./overtime-engine.mjs";
 import { CoverEngine }          from "./cover-engine.mjs";
 import { BloodiedEngine }       from "./bloodied-engine.mjs";
 import { FaerieFireFX }         from "./faerie-fire-fx.mjs";
-import { VisibilityEngine }     from "./visibility-engine.mjs";
 import { ConditionLibrary }     from "./condition-library.mjs";
 import { ConditionSheetIntegration } from "./condition-sheet-integration.mjs";
 import { SpellTargetPicker }    from "./spell-target-picker.mjs";
@@ -172,6 +171,7 @@ import { aceDistanceFt, aceWithinFt, aceRegisterPositionTracking } from "./geome
 import { PressGate } from "./gate/press-gate.mjs";
 // The One Road: a card goes through the card door, which waits for any dice that decided it.
 import { CardDoor } from "./road/doors.mjs";
+import { TableView } from "./road/table-view.mjs";
 
 /**
  * Authorise an inbound PLAYER-PROXY socket payload.
@@ -503,6 +503,13 @@ Hooks.once("init", () => {
   // must not be able to be skipped by an unrelated failure beneath it.
   try { installHookDebugGuard(); }
   catch (err) { console.warn(`${MODULE_ID} | hook-debug guard failed to install:`, err); }
+
+  // ⚠️🔴 SECOND, AND IN ITS OWN TRY: WHAT THE TABLE SEES (his rule, 2026-10-11).
+  // Every card's numbers are cut out before the card leaves the client that
+  // posts it. Registered before anything else so no card can be posted ahead of
+  // it, and kept out of the try below so nothing there can stop it registering.
+  try { TableView.register(); }
+  catch (err) { console.error(`${MODULE_ID} | the table split failed to register; cards will carry their numbers:`, err); }
 
   try {
     QolSettings.register();
@@ -2589,13 +2596,8 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Faerie Fire FX init failed:`, err);
   }
 
-  // Visibility engine — ALL users (players need renderChatMessage filtering)
-  try {
-    VisibilityEngine.registerHooks();
-    console.debug(`${MODULE_ID} | Visibility engine online`);
-  } catch (err) {
-    console.error(`${MODULE_ID} | Visibility engine init failed:`, err);
-  }
+  // The visibility engine is gone (2026-10-11): what a player sees is decided by
+  // road/table-view.mjs before a card is sent, not filtered after it arrives.
 
   // Cover engine — static, no constructor needed (API registered after game.aceQol is set)
   console.debug(`${MODULE_ID} | Cover engine online`);
@@ -4788,6 +4790,23 @@ Hooks.once("ready", () => {
         }
       }
 
+      // ── Step 2b: the one announcement (his rule, 2026-10-11: "One announcement,
+      // from QoL, and it is an information card. A hidden token is not named.").
+      // Engine used to post its own "has fallen" and pull the creature out of the
+      // tracker while QoL was running; with QoL active it does neither now, and
+      // this card is the only word the table gets.
+      try {
+        const hidden = !!tokenDoc?.hidden;
+        const who = hidden ? "Something" : (tokenDoc?.name || actor.name || "A creature");
+        await CardDoor.post({
+          content: `<div class="ace-qol-card ace-qol-fallen">`
+            + `<i class="fas fa-skull"></i> <strong>${foundry.utils.escapeHTML(who)}</strong> has fallen.</div>`,
+          flags: { [MODULE_ID]: { type: "fallen" } },
+        }, { dice: false });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not announce a death, so the table was told nothing:`, err);
+      }
+
       // ── Step 3: Fire custom hook for other modules (Envoy, Engine, etc.) ──
       // This fires AFTER QOL's own processing so the token still existed
       // during loot/dead-art steps. Listeners get full context.
@@ -5293,7 +5312,20 @@ Hooks.once("ready", () => {
 
 
     // ── PLAYER SIDE: listen for GM commands via socket ──
-    game.socket.on(SOCKET_NAME, async (payload) => {
+    // ⚠️🔴 A GM COMMAND IS OBEYED ONLY FROM A GM (2026-10-11). The server stamps who
+    // sent every module socket message (senderId); these open boxes, close
+    // dialogs and announce verdicts on a player's screen, and any player could
+    // send them to any other. Messages a player legitimately sends here (a
+    // fumble, a teleport table, an attack resolving) are not on this list.
+    const _GM_COMMANDS = new Set(["showOptionalPrompt", "showReactionPrompt", "summonVerdict",
+      "gmHiddenReason", "closeSystemDialogs", "showRiderPopup", "showSpellPicker",
+      "showReSaveRoll", "closeReSavePrompt"]);
+    game.socket.on(SOCKET_NAME, async (payload, senderId) => {
+      if (_GM_COMMANDS.has(payload?.action) && !game.users?.get?.(senderId)?.isGM) {
+        console.warn(`${MODULE_ID} | ignored "${payload.action}": only a GM sends that, and this came from `
+          + `${game.users?.get?.(senderId)?.name ?? "nobody the server knows"}.`);
+        return;
+      }
       // FlagsEngine optional prompts — routed to specific player
       if (payload?.action === "showOptionalPrompt" || payload?.action === "optionalPromptResult") {
         FlagsEngine.handleSocketMessage(payload);
@@ -5479,9 +5511,16 @@ Hooks.once("ready", () => {
   if (game.user.isGM) {
     // ── GM SIDE: receive player requests via socket ──
     // activeGM guard: socket messages broadcast to ALL connected GMs; only one should process.
-    game.socket.on(SOCKET_NAME, async (payload) => {
+    // ⚠️🔴 THE SENDER IS THE SERVER'S (2026-10-11, his rule: "A socket cannot
+    // prove who is asking."). PROVEN from Foundry 13.351's server: a module
+    // socket message reaches this listener as (data, senderId), and senderId is
+    // the user the server authenticated. Every check below (socket-authority.mjs)
+    // read `payload.userId`, which the sender writes. It is overwritten here with
+    // the server's, so every one of them now reads the truth.
+    game.socket.on(SOCKET_NAME, async (raw, senderId) => {
       if (game.users?.activeGM !== game.user) return;
-      if (!payload?.action) return;
+      if (!raw?.action) return;
+      const payload = { ...raw, userId: senderId ?? null, fromUserId: senderId ?? null };
 
       // ── v0.7.268 — A PLAYER cast a spell → run the counterspell check HERE,
       //    GM-side (the offer routes prompts to reactor owners, and the fizzle
@@ -5762,24 +5801,9 @@ Hooks.once("ready", () => {
                   }
                 }
                 mirrorImageRedirect = { rollResult: redirectVal, threshold, duplicatesBefore: dupes, duplicatesAfter: newCount, duplicateAC, hitDuplicate };
-                try {
-                  const remainingTxt = newCount === 0 ? "all duplicates destroyed — spell ends" : `${newCount} duplicate${newCount === 1 ? "" : "s"} remaining`;
-                  const outcomeTxt = hitDuplicate
-                    ? `<strong style="color:#d4af37;">duplicate destroyed</strong> — ${remainingTxt}`
-                    : `<strong style="color:#8eebff;">attack misses</strong> — duplicate not struck, ${dupes} duplicate${dupes === 1 ? "" : "s"} remaining`;
-                  // No dice were shown for the redirect roll, so the card door lands it at once.
-                  CardDoor.post({
-                    content: `<div style="background:linear-gradient(180deg,#1a1416 0%,#241a30 100%);border:2px solid #8eebff;border-radius:6px;padding:8px 10px;color:#cfcfd0;font-size:12px;">
-                      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-                        <i class="fas fa-clone" style="color:#8eebff;font-size:16px;"></i>
-                        <strong style="color:#8eebff;text-transform:uppercase;letter-spacing:0.5px;">Mirror Image</strong>
-                      </div>
-                      Attack on <strong>${targetActor.name}</strong> redirected (roll <strong>${redirectVal}</strong> vs threshold ${threshold}+).
-                      Duplicate AC <strong>${duplicateAC}</strong> vs attack <strong>${attackTotal}</strong> → ${outcomeTxt}.
-                    </div>`,
-                    speaker: ChatMessage.getSpeaker({ actor: targetActor }),
-                  }).catch(err => console.warn(`${MODULE_ID} | the Mirror Image card could not be posted:`, err));
-                } catch (_) { /* non-fatal */ }
+                // ⚠️🔴 NO CARD OF ITS OWN (his rule, 2026-10-11: Mirror Image is the
+                // attack card). The redirect is drawn on the attack card's own row
+                // by _postAttackResults, with the duplicate's AC on the GM's half.
               }
             }
           } catch (err) {
@@ -6107,7 +6131,6 @@ Hooks.once("ready", () => {
 
     bloodiedEngine,
     CoverEngine,
-    VisibilityEngine,
     ConditionLibrary,
     DescriptionParser,
     TransformationEngine,
@@ -6205,7 +6228,6 @@ Hooks.once("ready", () => {
   // Register APIs that need game.aceQol to exist
   try { CoverEngine.registerAPI(); } catch (err) { console.debug("ace-qol | CoverEngine.registerAPI non-critical:", err); }
   try { if (bloodiedEngine) bloodiedEngine.registerAPI(); } catch (err) { console.debug("ace-qol | BloodiedEngine.registerAPI non-critical:", err); }
-  try { VisibilityEngine.registerAPI(); } catch (err) { console.debug("ace-qol | VisibilityEngine.registerAPI non-critical:", err); }
 
   // ── Suppress "Bloodied" and other status effect chat cards ──
   // These come from modules like BLFS/DFreds and show "Bloodied - Applied to X" /

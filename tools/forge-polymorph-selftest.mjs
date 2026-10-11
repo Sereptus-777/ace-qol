@@ -340,12 +340,15 @@ console.log("\nTHE CAUSE: ACE'S GATE TAKES A SAVE THAT ASKS FOR A CARD, AND dnd5
 
 /* ── 2. With ACE QOL ─────────────────────────────────────────────────────── */
 console.log("\nWITH ACE QOL: THE GLYPH'S SAVES GO THROUGH ACE'S DOOR, AND NOTHING LANDS BEFORE THEIR DICE");
-const realPostCard = CheckGate._postCard;
+// ⚠️ THE CHECK CARD IS THE SAVE CARD (his rule, 2026-10-11): CheckGate posts it
+// through _postCheckCard with save rows, and a row's word is its verdict.
+const realPostCard = CheckGate._postCheckCard;
 const aceCards = [];
-CheckGate._postCard = async ({ actor, roll, total = null, extra = "" }) => {
+CheckGate._postCheckCard = async ({ actor, roll, rows = [] }) => {
   if (roll) { safeShowForRoll(roll, "save card"); await awaitDiceSettle(); }
-  const verdict = /SUCCESS|FAILURE/.exec(String(extra))?.[0] ?? null;
-  const t = total ?? roll?.total ?? null;
+  const row = rows[0] ?? {};
+  const verdict = row.passed === true ? "SUCCESS" : row.passed === false ? "FAILURE" : null;
+  const t = row.saveTotal ?? roll?.total ?? null;
   note(`ace card ${actor?.name} ${t} ${verdict}`);
   aceCards.push({ who: actor?.name, total: t, verdict });
 };
@@ -481,7 +484,7 @@ console.log("\nONE ANSWER EVERYWHERE: THE TOTAL THE CARD SHOWS, AND WHO IS DEAD"
   check("the old concentration button reads the total its card shows, so MAINTAINED or BROKEN matches the card after a luck point (source read: it lives inside ACE's startup)",
     wire.length > 0 && /CheckGate\.totalOf\(roll\)/.test(wire) && !/roll\?\.total\b/.test(wire),
     wire.length ? "read from ace-qol.mjs" : "the handler was not found in ace-qol.mjs");
-  const post = bare(bodyOf(readFileSync(`${QOL}/check-gate.mjs`, "utf8"), "static async _postCard("));
+  const post = bare(bodyOf(readFileSync(`${QOL}/check-gate.mjs`, "utf8"), "static async _postCheckCard("));
   const [show, settle, posted] = ["safeShowForRoll(", "await awaitDiceSettle(", "CardDoor.post("].map(s => post.indexOf(s));
   check("the real card throws its roll's dice and waits for them before it posts, the order the stand-in above keeps",
     show >= 0 && show < settle && settle < posted, `positions ${show}, ${settle}, ${posted}`);
@@ -503,7 +506,7 @@ console.log("\nONE ANSWER EVERYWHERE: THE TOTAL THE CARD SHOWS, AND WHO IS DEAD"
   check("Forge's dead is ACE's dead: the same answer as ACE's picker rule for every kind of creature",
     disagree.length === 0, disagree.length ? `they disagree on: ${disagree.join("; ")}` : `${kinds.length} kinds agree`);
 }
-CheckGate._postCard = realPostCard;
+CheckGate._postCheckCard = realPostCard;
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

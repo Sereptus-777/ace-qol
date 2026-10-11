@@ -128,6 +128,8 @@ export class HealResolver {
         results.push({
           name: c.name,
           img: c.img,
+          // Whose hit points these are, so only that creature's owners and the GM get them.
+          actorId: targetActor?.id ?? null,
           formula: roll.formula,
           rolled: roll.total,
           healed: landed.healed,
@@ -174,7 +176,8 @@ export class HealResolver {
           <img src="${r.img || "icons/svg/heal.svg"}" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid #5a8a5a;flex-shrink:0;" />
           <div style="flex:1 1 160px;min-width:0;color:#e8d49a;">
             <div style="font-weight:600;overflow-wrap:anywhere;">${esc(r.name)}</div>
-            <div style="font-size:14px;color:#c0b288;">${hpLine}</div>
+            ${/* hit points are the GM's, a party member's included (his rule, 2026-10-11) */ ""}
+            <div data-ace-secret="gm" style="font-size:14px;color:#c0b288;">${hpLine}</div>
             ${clearedLine}
           </div>
           <div style="flex-shrink:0;">${numberCol}</div>
@@ -207,6 +210,7 @@ export class HealResolver {
         speaker: ChatMessage.getSpeaker({ actor: caster }),
         content: html,
         flavor: `${item.name} healed ${results.length} target${results.length === 1 ? "" : "s"} for ${totalHealed} total`,
+        flags: { [MODULE_ID]: { type: "healResult", actorId: caster?.id ?? null } },
       });
     } catch (err) {
       console.warn(`${MODULE_ID} | HealResolver: the healing card could not be posted; the healing still landed:`, err);

@@ -518,6 +518,27 @@ console.log("");
     line("save", "con", 6, 14), "6 on the die, +5 Constitution, +3 the rest of the roll = 14");
   check("a bare d20 with nothing added says nothing rather than \"+0\"",
     line("death", "death", 12, 12), "");
+
+  // ⚠️🔴 THE SENTENCE IS THE ROLLER'S, NOT THE TABLE'S (his rule, 2026-10-11:
+  // check-gate "prints '+5 Constitution' in the line and again in the subtitle,
+  // and the self-test locks that leaking sentence in. Change the test to expect
+  // the bonus hidden."). Above: what the GM reads. Here: what the table is sent,
+  // through the one function that decides it. And the same morning: "A player
+  // character's formula and DC are not a secret. The whole table sees them. A
+  // creature's bonus, DC, AC, and hit points stay on my screen only."
+  const { splitHtml } = await import("../scripts/road/table-view.mjs");
+  const read = CheckGate.read(aryel, "concentration", "con");
+  const html = CheckGate._breakdownHtml(CheckGate._breakdown(aryel, read, 6, 11), "aryel");
+  const sent = splitHtml(html, { makeId: () => "x" });
+  check("the whole sentence is Aryel's: when no player owns her it is cut, and it is the GM's",
+    sent.slots.map(sl => sl.aud), ["gm"]);
+  const party = splitHtml(html, { makeId: () => "x", isTable: (id) => id === "aryel" });
+  check("when a player owns her, the whole table reads it",
+    party.slots.length === 0 && /\+5/.test(party.html), true);
+  check("the table is sent no bonus and no total",
+    /\+5|Constitution|11/.test(sent.html), false);
+  const nobody = splitHtml(CheckGate._breakdownHtml(CheckGate._breakdown(aryel, read, 6, 11)), { makeId: () => "y" });
+  check("a sentence that names nobody is the GM's", nobody.slots.map(sl => sl.aud), ["gm"]);
   // ⚠️ THE "+0" ITSELF: a check that carries no single modifier must not print one.
   check("a concentration check carries no single modifier to print", CheckGate.read(aryel, "concentration", "con").modifier, null);
 }

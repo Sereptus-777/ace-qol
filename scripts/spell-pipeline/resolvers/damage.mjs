@@ -551,7 +551,7 @@ export class DamageResolver {
             <i class="fas fa-bullseye" style="color:${gold};font-size:12px;margin-right:5px;"></i>${r.target}
             <span class="ace-qol-ac" data-ac-actor="${r.targetActor?.id ?? ""}" style="color:#8a7a5a;font-weight:400;font-size:12px;">AC ${r.ac}</span>
           </div>
-          ${r.situNote ? `<div style="font-size:12px;color:#a8935f;font-style:italic;margin:1px 0 2px 20px;">${r.situNote}</div>` : ""}`;
+          ${r.situNote ? `<div class="ace-qol-gm-only ace-qol-block" style="font-size:12px;color:#a8935f;font-style:italic;margin:1px 0 2px 20px;">${r.situNote}</div>` : ""}`;
       }
       if (r.error) {
         return `${header}<div style="margin-left:20px;font-size:13px;color:#d44;">${noun} ${r.n}: roll failed</div>`;
@@ -569,8 +569,9 @@ export class DamageResolver {
           <span style="background:#241c12;border:1px solid #4a3a28;border-radius:4px;padding:1px 7px;font-weight:700;">
             <i class="fas fa-dice-d20" style="color:${gold};font-size:12px;margin-right:3px;"></i>${r.d20 ?? "?"}
           </span>
-          <span style="font-weight:700;color:#fff;">= ${r.total}</span>
-          <span style="color:#6b5230;">vs ${r.ac}</span>
+          ${/* the total is the caster's, the AC the target's (his rule, 2026-10-11) */ ""}
+          <span class="ace-qol-bonus" data-bonus-actor="${caster?.id ?? ""}" style="font-weight:700;color:#fff;">= ${r.total}</span>
+          <span class="ace-qol-ac" data-ac-actor="${r.targetActor?.id ?? ""}" style="color:#6b5230;">vs ${r.ac}</span>
           ${verdict}
         </div>
         ${r.luck ? `<div style="margin:0 0 2px 28px;font-size:14px;line-height:1.35;color:#7fd08a;"><i class="fas fa-clover"></i> ${foundry.utils.escapeHTML(String(r.luck))}</div>` : ""}`;
@@ -595,6 +596,8 @@ export class DamageResolver {
         speaker: ChatMessage.getSpeaker({ actor: caster }),
         content: html,
         flavor: `${item.name}: ${rows.length} ${noun}${rows.length === 1 ? "" : "s"}`,
+        // An ACE card, so the one function (road/table-view.mjs) reads it.
+        flags: { [MODULE_ID]: { type: "spellVolley", actorId: caster?.id ?? null } },
       });
     } catch (err) {
       console.warn(`${MODULE_ID} | volley card post failed:`, err);

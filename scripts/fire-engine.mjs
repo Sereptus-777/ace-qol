@@ -864,163 +864,99 @@ export class FireEngine {
    * down in fall-pipeline.mjs from the day it happened.
    */
   static async _postCheckCard(tokenDoc, { face, total, passed, burn }) {
+    // ⚠️🔴 THE SAVE CARD, THEN THE DAMAGE CARD (his rule, 2026-10-11: "Save. One
+    // card for ... the check to beat out a fire" and "Damage. One card for a
+    // weapon, a spell, a trap, and fire damage. Same row, same 1/4 1/2 1 2, same
+    // HP line, same Apply."). This drew a card of its own with the burn inside
+    // it; the check is the save card's row now, and the fire it costs is the
+    // damage card every hit uses.
     try {
-      const { aceD20FaceImg } = await import("./dice-face.mjs");
-      const { faceImg } = await import("./face.mjs");
+      const { SaveEngine } = await import("./save-engine.mjs");
       const { CardDoor } = await import("./road/doors.mjs");
+      const { faceOf } = await import("./face.mjs");
       const { explainCheck } = await import("./roll-formula.mjs");
-      const { DamageCardRenderer } = await import("./damage-card-renderer.mjs");
       const esc = foundry.utils.escapeHTML;
-      const signed = (n) => `${n < 0 ? "−" : "+"}${Math.abs(n)}`;
-      const colour = passed ? "#9bcc4a" : "#ff1744";
+      const actor = tokenDoc.actor;
 
-      /* ── "Dex +2 = 8 vs 10", and a bare "vs 10" when nothing was added ──
-         The ability's own part is named by the ability and nothing else: the
-         sheet's reader labels it "Dex 14", which is the score, and the score is
-         not what was added to the die. */
+      /* What was added to the die, named, for the row's own formula line. The
+         ability's part is named by the ability; whatever dnd5e added that the
+         sheet cannot name is said as such, so the parts always add up. */
       const used = Number.isFinite(face) ? total - face : null;
-      let bonusText = "";
+      let parts = [];
       if (used) {
-        const read = explainCheck(tokenDoc.actor, { ability: "dex" });
-        const named = (read.parts ?? []).filter(p => Number(p.value) !== 0).map(p => {
-          const label = p.why === "ability" ? "Dex" : (p.label || "bonus");
-          return `${esc(label)} ${signed(Number(p.value))}`;
-        });
-        // ⚠️ WHAT THE ROLL USED, NOT WHAT THE SHEET ADDS UP TO. If dnd5e added
-        // something this reader cannot see, the number is still right and the
-        // part that cannot be named says so instead of going missing.
-        const sum = (read.parts ?? []).reduce((n, p) => n + (Number(p.value) || 0), 0);
+        parts = (explainCheck(actor, { ability: "dex" }).parts ?? [])
+          .filter(p => Number(p.value) !== 0)
+          .map(p => ({ name: p.why === "ability" ? "Dex" : (p.label || "bonus"), value: Number(p.value) }));
+        const sum = parts.reduce((n, p) => n + p.value, 0);
         if (sum !== used) {
-          named.push(`${signed(used - sum)} from somewhere this sheet does not name`);
-          console.log(`${LOG} | ${tokenDoc.name}'s check used ${signed(used)} where the sheet adds `
-            + `up to ${signed(sum)}. The card shows what the roll used.`);
+          parts.push({ name: "unnamed", value: used - sum });
+          console.log(`${LOG} | ${tokenDoc.name}'s check used ${used} where the sheet adds up to ${sum}. `
+            + `The card shows what the roll used.`);
         }
-        bonusText = `${named.join(" ")} = ${total} `;
       }
-
-      let damageBlock = "";
-      let flags = { type: "fireCheck" };
-      if (burn) {
-        const hp = tokenDoc.actor?.system?.attributes?.hp ?? {};
-        const row = DamageCardRenderer.buildTargetRowHtml({
-          tokenDocId: tokenDoc.id,
-          actorId: tokenDoc.actor?.id,
-          sceneId: tokenDoc.parent?.id,
-          name: tokenDoc.name,
-          img: burn.img,
-          currentHP: Number(hp.value ?? 0),
-          maxHP: Number(hp.max ?? 0),
-          totalFinal: burn.final,
-          isCrit: false,
-          components: burn.components,
-        });
-        const burnType = burn.components?.[0]?.type ?? "fire";
-        /* ⚠️🔴 ONE PILL ON THE PLAYER'S HALF (his rule, 2026-10-06: "Under a
-           failure, one orange-red pill, about the size of the red 2 that is there
-           now: 2 fire damage. Remove the 1d6 fire. Remove the lower row with his
-           portrait and the other 2 fire pill.").
-
-           The table was reading the same number three times: the raw die beside
-           "1d6 fire", then again inside the target row's own pill, with his
-           portrait repeated under a card that already has his face at the top. The
-           damage he took is one fact and it gets one pill.
-
-           Nothing is deleted from the GM half, which is why the row is still built
-           and still carries the switch, the quarter, half, 1 and 2, and the hit
-           points: it moves inside the GM wrapper rather than off the card. The
-           same markup goes to every client and the halves differ only by who is
-           allowed to see which, which is the rule every other card follows. */
-        damageBlock = `
-          <div class="ace-qol-fire-hit">
-            <span class="ace-qol-fire-hit-pill">${burn.final} ${esc(burnType)} damage</span>
-          </div>
-          <div class="ace-qol-fire-burn ace-qol-gm-only">
-            <div class="ace-qol-fire-burn-dice">
-              <span class="ace-qol-fire-burn-formula">${esc(burn.formula)} ${esc(burnType)}</span>
-              <span class="ace-qol-fire-burn-face">${burn.raw}</span>
-            </div>
-            <div class="ace-qol-dmg-targets">${row}</div>
-            <div class="ace-qol-dmg-gm-controls">
-              <div class="ace-qol-dmg-actions">
-                <button class="ace-qol-btn ace-qol-btn-apply" data-action="aceQolApplyDamage">
-                  <i class="fas fa-heart-crack"></i> APPLY
-                </button>
-                <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage">
-                  <i class="fas fa-undo"></i> UNDO ALL
-                </button>
-              </div>
-            </div>
-          </div>`;
-        flags = {
-          // ⚠️ THE GATE. damage-engine only wires buttons on a card whose type is
-          // in its whitelist. Without this every button here is dead AND the
-          // hide-from-players pass never runs.
-          type: "damageResult",
-          damageResults: [{
-            targetId: tokenDoc.actor?.id,
-            tokenId: tokenDoc.id,
-            tokenDocId: tokenDoc.id,
-            sceneId: tokenDoc.parent?.id,
-            isLinked: tokenDoc.actorLink ?? false,
-            totalFinal: burn.final,
-            currentHP: Number(hp.value ?? 0),
-            maxHP: Number(hp.max ?? 0),
-            name: tokenDoc.name,
-            img: burn.img,
-            result: "hit",
-            reactionsAsked: true,
-            // A Roll object does not belong in flags.
-            components: burn.components.map(({ roll: _r, ...rest }) => rest),
-          }],
-          totalRaw: burn.raw,
-          aceFire: { check: total, dc: 10 },
-        };
-      }
-
-      const content = `
-        <div class="ace-qol-card ace-qol-fire-card">
-          <div class="ace-qol-fire-who">
-            ${faceImg(tokenDoc.actor, "ace-qol-fire-face")}
-            <span class="ace-qol-fire-name">${esc(tokenDoc.name ?? "")}</span>
-            <span class="ace-qol-fire-what">Dexterity check</span>
-          </div>
-          <!-- ⚠️🔴 THE DIE IS THE TABLE'S, THE ARITHMETIC IS HIS (his rule,
-               2026-10-06: "Vilnius on fire: they see his die and that he is still
-               on fire, and they see 5 fire. They do not see Dex +2 or vs 10. You
-               do."). One card: the face and the verdict are public, the bonus and
-               the 10 it was measured against are the GM half of the same card.
-               A span, not a block, so his half sits on the line beside the die
-               rather than dropping below it. -->
-          <!-- ⚠️🔴 THE DIE, ITS NUMBER, THEN THE VERDICT (his rule, 2026-10-06:
-               "The die on the player's half is 40 by 40, with the number beside
-               it. A success reads that number, then = pass... A failure reads that
-               number, then = fail").
-
-               The face is the roll and the number beside it is that same face
-               written out, which is what he asked for: the table reads 6 = fail
-               and learns nothing about the bonus or the 10 it was measured
-               against. Those stay on the GM half of this same line, after the
-               verdict, so his reading order is not disturbed by them. -->
-          <div class="ace-qol-fire-roll">
-            ${aceD20FaceImg(face, { size: 40 })}
-            <span class="ace-qol-fire-face-num">${Number.isFinite(face) ? face : "?"}</span>
-            <span class="ace-qol-fire-eq" style="color:${colour};">
-              = ${passed ? "pass" : "fail"}</span>
-            <span class="ace-qol-fire-sum ace-qol-gm-only">${bonusText}vs 10</span>
-          </div>
-          <div class="ace-qol-fire-verdict" style="color:${colour};">
-            ${esc(tokenDoc.name ?? "It")} ${passed ? "beat the flames out" : "is still on fire"}.
-          </div>
-          ${damageBlock}
-        </div>`;
-
+      const row = {
+        tokenDocId: tokenDoc.id,
+        actorId: actor?.id ?? null,
+        name: esc(tokenDoc.name ?? ""),
+        img: faceOf(actor),
+        dieResult: Number.isFinite(face) ? face : null,
+        saveTotal: Number.isFinite(total) ? total : null,
+        passed: !!passed,
+        saveParts: parts,
+        extraHtml: `<div class="ace-qol-save-landed">${esc(tokenDoc.name ?? "It")} `
+          + `${passed ? "beat the flames out" : "is still on fire"}.</div>`,
+      };
+      // dc-ok: castLineHtml puts dcText through dcSpan, as the GM's (dcWhose: null).
+      const top = SaveEngine.castLineHtml(actor, "Dexterity check", "", {
+        verb: "rolls", dcText: "DC 10", rollers: [actor?.id].filter(Boolean),
+        // The 10 is the fire's, not anybody at the table's.
+        dcWhose: null });
       await CardDoor.post({
-        content,
-        flags: { [MODULE_ID]: flags },
-      }, { dice: false });   // dice-ok: awaitDiceSettle above already held this card
+        speaker: ChatMessage.getSpeaker({ token: tokenDoc }),
+        content: `<div class="ace-qol-save-results-card ace-qol-save-shell ace-qol-fire-check" data-ace-save-shell="1">`
+          + top
+          + `<div class="ace-qol-save-results">${SaveEngine.saveResultRowHtml(row, {})}</div>`
+          + `</div>`,
+        flags: { [MODULE_ID]: { type: "fireCheck", actorId: actor?.id ?? null, tokenDocId: tokenDoc.id,
+          passed: !!passed } },
+      }, { dice: false });   // dice-ok: _runCheck held for the d20 before this
     } catch (err) {
       console.warn(`${LOG} | the Dexterity check card could not be posted. The roll stands: `
         + `${tokenDoc?.name} rolled ${total} against 10 and ${passed ? "is out" : "keeps burning"}.`, err);
+    }
+    if (burn) await FireEngine._postBurnCard(tokenDoc, burn);
+  }
+
+  /**
+   * The fire a failed check costs, on the one damage card (2026-10-11). Its own
+   * row, its own ¼ ½ 1 2, its own hit points and APPLY on the GM's half, the
+   * damage with its type for the table. Nothing applied here: APPLY is his.
+   */
+  static async _postBurnCard(tokenDoc, burn) {
+    try {
+      const actor = tokenDoc?.actor;
+      if (!actor) return;
+      const { DamageCardRenderer } = await import("./damage-card-renderer.mjs");
+      const hp = actor.system?.attributes?.hp ?? {};
+      // The fire is not an item. The card asks an item only for a name, a picture
+      // and a uuid, so it is given exactly those. icons/svg/fire.svg is Foundry's own.
+      const fire = { name: "Burning", img: "icons/svg/fire.svg", uuid: null };
+      await DamageCardRenderer.postDamageCard(fire, actor, [{
+        targetToken: tokenDoc.object ?? tokenDoc,
+        targetActor: actor,
+        target: { name: tokenDoc.name, img: burn.img, currentHP: Number(hp.value ?? 0), maxHP: Number(hp.max ?? 0) },
+        totalFinal: burn.final,
+        totalRaw: burn.raw,
+        isCrit: false,
+        hitResult: "hit",
+        components: burn.components,
+        reactionsAsked: true,
+      }], "doubleDice", null, null, null, { titleNote: burn.formula, offerMeleeExtras: false });
+    } catch (err) {
+      console.warn(`${LOG} | ${tokenDoc?.name} failed and the fire rolled ${burn?.final ?? "?"}, but the damage `
+        + `card could not be posted. Nothing was applied.`, err);
+      ui.notifications?.warn(`ACE: the fire on ${tokenDoc?.name ?? "a creature"} rolled ${burn?.final ?? "?"}, `
+        + `but its damage card could not be posted. See the console.`);
     }
   }
 
@@ -1028,13 +964,13 @@ export class FireEngine {
    * Roll the fire a failed check costs, and hand the numbers back.
    *
    * ⚠️🔴 IT ROLLS, IT DOES NOT POST AND IT DOES NOT APPLY (his rule, 2026-10-06:
-   * "A failure puts the 1d6 fire on that same card, under the check, with Apply
-   * and the quarter, half, 1, and 2 buttons. Not a second card.").
+   * "A failure puts the 1d6 fire on that same card..."). SUPERSEDED 2026-10-11:
+   * "Damage. One card for a weapon, a spell, a trap, and fire damage." The check
+   * is the save card and the burn is the damage card (_postBurnCard).
    *
-   * This posted its own damage card an hour ago, which gave him two cards for one
-   * check, and before that it took the hit points off directly, which left nothing
-   * on screen to apply, halve or undo. It does one job now: roll the die, show it,
-   * and give the check card what it needs to draw the damage underneath itself.
+   * Before that it took the hit points off directly, which left nothing on
+   * screen to apply, halve or undo. It does one job now: roll the die, show it,
+   * and hand back what the damage card needs (2026-10-11: the burn is the damage card).
    *
    * ⚠️ `preview` IS WHAT READS RESISTANCE. The raw total and the final both go
    * back, because the row prints the reduction and APPLY needs the final.
@@ -1061,7 +997,7 @@ export class FireEngine {
       const final = Number(finals?.[0]?.final ?? raw) || 0;
 
       console.log(`${LOG} | ${tokenDoc.name} failed and the fire rolled ${raw}`
-        + `${final !== raw ? `, reduced to ${final}` : ""}. It goes on the check card; APPLY is his.`);
+        + `${final !== raw ? `, reduced to ${final}` : ""}. It goes on the damage card; APPLY is his.`);
 
       return {
         raw, final, formula, img: faceOf(actor),

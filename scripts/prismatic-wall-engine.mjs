@@ -685,17 +685,20 @@ export class PrismaticWallEngine {
   //  Cards
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static _mathHtml(save) {
+  static _mathHtml(save, whose = null) {
     if (save.autoFail) return `<span class="ace-qol-prism-math ace-qol-save-roll ace-qol-rsv2-red">automatic failure</span>`;
     if (!Number.isFinite(save.total)) {
       return `<span class="ace-qol-prism-math ace-qol-save-roll">${save.noRoll ? "no roll" : "not rolled"}</span>`;
     }
     const cls = save.passed ? "ace-qol-rsv2-green" : "ace-qol-rsv2-red";
-    if (!Number.isFinite(save.natural)) return `<span class="ace-qol-prism-math ace-qol-save-roll ${cls}">${save.total}</span>`;
+    // The die is the table's; the bonus and the total are the creature's (his
+    // rule, 2026-10-11), in its wrapper. One that names nobody is the GM's.
+    const mine = (html) => `<span class="ace-qol-bonus"${whose ? ` data-bonus-actor="${esc(whose)}"` : ""}>${html}</span>`;
+    if (!Number.isFinite(save.natural)) return `<span class="ace-qol-prism-math ace-qol-save-roll ${cls}">${mine(String(save.total))}</span>`;
     const mod = save.total - save.natural;
     return `<span class="ace-qol-prism-math ace-qol-save-roll">${save.natural} `
-      + `<span class="ace-qol-prism-dim">${mod < 0 ? "-" : "+"} ${Math.abs(mod)}</span> = `
-      + `<span class="${cls}">${save.total}</span></span>`;
+      + mine(`<span class="ace-qol-prism-dim">${mod < 0 ? "-" : "+"} ${Math.abs(mod)}</span> = `
+      + `<span class="${cls}">${save.total}</span>`) + `</span>`;
   }
 
   static _reasonsHtml(save) {
@@ -724,7 +727,7 @@ export class PrismaticWallEngine {
         <div class="ace-qol-prism-row">
           ${aceD20FaceImg(Number.isFinite(save.natural) ? save.natural : 20, { size: 40 })}
           <span class="ace-qol-rsv2-name">${name}</span>
-          ${this._mathHtml(save)}
+          ${this._mathHtml(save, tokenDoc?.actor?.id ?? null)}
           <span class="ace-qol-rsv2-badge ${save.noRoll ? "" : (save.passed ? "ace-qol-rsv2-pass" : "ace-qol-rsv2-fail")}">${save.noRoll ? "NO ROLL" : (save.passed ? "PASS" : "FAIL")}</span>
           ${this._reasonsHtml(save)}
         </div>
@@ -776,7 +779,7 @@ export class PrismaticWallEngine {
           <span class="ace-qol-prism-swatch" style="background:${LAYER_COLOURS[row.layer.key] ?? "#888"}"></span>
           <span class="ace-qol-prism-layer">${esc(row.layer.label)}</span>
           ${aceD20FaceImg(Number.isFinite(row.save.natural) ? row.save.natural : 20, { size: 30 })}
-          ${this._mathHtml(row.save)}
+          ${this._mathHtml(row.save, tokenDoc?.actor?.id ?? null)}
           <span class="ace-qol-rsv2-badge ${row.save.noRoll ? "" : (row.save.passed ? "ace-qol-rsv2-pass" : "ace-qol-rsv2-fail")}">${row.save.noRoll ? "NO ROLL" : (row.save.passed ? "PASS" : "FAIL")}</span>
           ${outcomeOf(row)}
           ${this._reasonsHtml(row.save)}
@@ -804,7 +807,7 @@ export class PrismaticWallEngine {
           <span class="ace-qol-rsv2-src">${rows.length} Dexterity saves, <span class="ace-qol-save-dc">DC ${facts.dc}</span></span></div>
         <div class="ace-qol-prism-rows">${rowHtml}</div>
         ${total > 0 || dmgRows.length ? `<div class="ace-qol-prism-total">Damage: <span class="ace-qol-dmg-grand-total">${total}</span>
-          <span class="ace-qol-prism-dim">(${components.filter(c => c.final > 0).map(c => `${c.final} ${esc(c.type)}`).join(", ") || "none got through"})</span></div>` : ""}
+          <span class="ace-qol-prism-dim">(${components.filter(c => c.final > 0).map(c => `${c.final} ${esc(c.type)}`).join(", ") || "nothing landed"})</span></div>` : ""}
         ${total > 0 ? `<div class="ace-qol-dmg-gm-controls ace-qol-prism-gm">
           <div class="ace-qol-dmg-hp">HP ${hpNow} → ${hpAfter}/${hpMax}${hpAfter <= 0 ? " ☠" : ""}</div>
           <div class="ace-qol-dmg-actions">

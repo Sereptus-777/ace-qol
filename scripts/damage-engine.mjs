@@ -12,7 +12,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
-import { registerChatCardHandler } from "./chat-render-utils.mjs";
+import { registerChatCardHandler, bonusSpan, acSpan } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { RiderEngine } from "./rider-engine.mjs";
@@ -185,7 +185,7 @@ export class DamageEngine {
     // player CLEAVE clicks emitted into the void. Register directly instead.
     // SILENT-OK: GM-only handler; every client sees this hook
     if (!game.user?.isGM) return;
-    game.socket?.on?.(`module.${MODULE_ID}`, async (data) => {
+    game.socket?.on?.(`module.${MODULE_ID}`, async (data, senderId) => {
       try {
         // SILENT-OK: a socket message of another type; this listener sees them all
         if (data?.type !== "addCleaveTarget") return;
@@ -193,7 +193,10 @@ export class DamageEngine {
         // Validate the requesting user actually exists, owns the ATTACKER
         // actor on the damage card, and isn't bypassing rate limits.
         // (Audit-mandated 2026-06-08 — Grok pre-launch audit, Significant #9.)
-        const fromUser = game.users?.get?.(data.fromUserId);
+        // ⚠️ THE SERVER'S SENDER, NOT `data.fromUserId` (2026-10-11): Foundry
+        // stamps who sent every module socket message; the payload is the
+        // sender's own word.
+        const fromUser = game.users?.get?.(senderId);
         if (!fromUser) {
           console.warn(`${MODULE_ID} | addCleaveTarget socket: unknown user ${data.fromUserId} — rejecting.`);
           return;
@@ -250,8 +253,24 @@ export class DamageEngine {
         const messageEl = document.querySelector(`[data-message-id="${data.messageId}"]`);
         const cardEl = messageEl?.querySelector?.(".ace-qol-damage-card") ?? messageEl ?? null;
 
+        // ⚠️ THE OVERKILL IS WORKED OUT HERE (2026-10-11). It is the hit points
+        // the first target had left, which a player's copy of the card no longer
+        // carries (road/table-view.mjs), and a number a player sends is only
+        // their word for it.
+        // A mastery cleave sends the amount its own rule makes (the hit less the
+        // ability modifier, both on the card); the homebrew overkill sends none,
+        // and that is the one measured here.
+        let overkill = data.overkillAmount, overkillComponents = data.overkillComponents;
+        if (data.isCleave && (overkill === null || overkill === undefined)) {
+          ({ overkill, components: overkillComponents } = DamageEngine.overkillOf(message));
+          if (overkill <= 0) {
+            console.warn(`${MODULE_ID} | addCleaveTarget socket: no target on that card was taken past 0, so `
+              + `there is no excess to carry. Refused.`);
+            return;
+          }
+        }
         await DamageApplicator.addTargetToCard(
-          message, cardEl, tokenObj, data.isCleave, data.overkillAmount, data.overkillComponents
+          message, cardEl, tokenObj, data.isCleave, overkill, overkillComponents
         );
         console.log(`${MODULE_ID} | Socket: GM applied cleave target ${tokenObj.name} on behalf of ${fromUser.name}`);
       } catch (err) {
@@ -259,6 +278,20 @@ export class DamageEngine {
       }
     });
     console.log(`${MODULE_ID} | GM cleave-socket listener online.`);
+  }
+
+  /**
+   * The damage a hit carried past 0 on the first target it took there, and the
+   * parts it was made of. Read from the GM's whole copy of the card: the hit
+   * points are not on anybody else's.
+   * @returns {{overkill:number, components:Array|null}}
+   */
+  static overkillOf(message) {
+    for (const r of (message?.flags?.[MODULE_ID]?.damageResults ?? [])) {
+      const excess = Number(r.totalFinal) - Number(r.currentHP);
+      if (excess > 0) return { overkill: excess, components: r.components ?? null };
+    }
+    return { overkill: 0, components: null };
   }
 
   /**
@@ -344,12 +377,9 @@ export class DamageEngine {
          `.ace-qol-dmg-gm-controls` INSIDE each row, which is still hidden here.
          So one card, two halves, and the half that goes is only the half he said.
          The CLEAVE row sits outside both and stays clickable for players. */
-      if (!game.user.isGM) {
-        const gmControls = el.querySelectorAll?.(".ace-qol-dmg-gm-controls");
-        for (const ctrl of (gmControls ?? [])) {
-          ctrl.style.display = "none";
-        }
-      }
+      // ⚠️ NOT HIDDEN HERE ANY MORE (2026-10-11). The stylesheet keeps
+      // `.ace-qol-dmg-gm-controls` shut until the chrome pass marks it on the
+      // GM's screen, and a player's copy never had it (road/table-view.mjs).
 
       // ── Rebuild target rows from flags if stored HTML is stale ──
       // When a player clicks CLEAVE and addTargetToCard updates message
@@ -597,24 +627,22 @@ export class DamageEngine {
           }
 
           // ── Branch 2: Homebrew Overkill Carryover (fallback) ──
-          const results = flags.damageResults ?? [];
-          let overkill = 0;
+          // ⚠️ THE EXCESS IS THE GM'S TO WORK OUT (2026-10-11). It is the first
+          // target's hit points subtracted from the damage, and a player's copy of
+          // the card does not carry a monster's hit points. A player picks the
+          // token; the GM measures what carries.
+          let overkill = null;
           let overkillComponents = null;
-          for (const r of results) {
-            const excess = r.totalFinal - r.currentHP;
-            if (excess > 0) {
-              overkill = excess;
-              overkillComponents = r.components;
-              break;
+          if (game.user.isGM) {
+            ({ overkill, components: overkillComponents } = DamageEngine.overkillOf(message));
+            if (overkill <= 0) {
+              ui.notifications.warn("ACE QOL: No excess damage — no target reduced to 0 HP.");
+              return;
             }
-          }
-          if (overkill <= 0) {
-            ui.notifications.warn("ACE QOL: No excess damage — no target reduced to 0 HP.");
-            return;
           }
 
           cleaveBtn.classList.add("ace-qol-btn-picking");
-          cleaveBtn.textContent = `⚔ ${overkill} DMG — CLICK TOKEN...`;
+          cleaveBtn.textContent = overkill ? `⚔ ${overkill} DMG — CLICK TOKEN...` : "⚔ CLEAVE — CLICK TOKEN...";
 
           const pickHook = Hooks.on("controlToken", async (token, controlled) => {
             // SILENT-OK: controlToken also fires on DESELECT; only a selection picks a target
@@ -1469,9 +1497,11 @@ export class DamageEngine {
         + `<span style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;flex:0 0 auto;">`
         + `<img src="${_bd20}" alt="d20 ${d20}" style="width:46px;height:46px;object-fit:contain;filter:drop-shadow(0 1px 2px #000)${nat20 ? " drop-shadow(0 0 5px #e8c766)" : ""};" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
         + `<span style="display:none;flex-direction:column;align-items:center;justify-content:center;width:46px;height:46px;background:radial-gradient(circle at 50% 35%,#2a2a30,#0c0c0e);border:1.5px solid #4a4a52;border-radius:9px;"><span style="font-size:20px;font-weight:800;color:#f0e4c0;">${d20 ?? "?"}</span><span style="font-size:8px;color:#7a7a82;">d20</span></span></span>`
-        + `<div style="flex:1;min-width:0;line-height:1.55;"><div style="font-size:12px;color:#c8c6c0;">${_chips.join(" ")}</div>`
-        + `<div style="font-size:11px;color:#8a8a92;">vs AC <strong style="color:#cfcabf;">${targetAC}</strong></div></div>`
-        + `<div style="text-align:right;flex:0 0 auto;"><div style="font-size:23px;font-weight:800;color:#fff;line-height:1;">${cleaveTotal}</div>`
+        // ⚠️ THE DIE AND HIT OR MISS ARE THE TABLE'S; THE CHIPS AND THE TOTAL ARE
+        // THE ATTACKER'S, THE AC IS THE TARGET'S (his rule, 2026-10-11).
+        + `<div style="flex:1;min-width:0;line-height:1.55;"><div style="font-size:12px;color:#c8c6c0;">${bonusSpan(_chips.join(" "), attActor?.id ?? null)}</div>`
+        + `<div style="font-size:11px;color:#8a8a92;">${acSpan(`vs AC ${targetAC}`, chosen?.actor?.id ?? chosen?.document?.actorId ?? null)}</div></div>`
+        + `<div style="text-align:right;flex:0 0 auto;"><div style="font-size:23px;font-weight:800;color:#fff;line-height:1;">${bonusSpan(String(cleaveTotal), attActor?.id ?? null)}</div>`
         + `<span style="display:inline-block;margin-top:5px;padding:2px 9px;border-radius:4px;font-size:11px;font-weight:800;letter-spacing:.5px;${_badgeStyle}">${_badgeLabel}</span></div>`
         + `</div>`
         + (luckNote ? `<div style="margin-top:6px;font-size:14px;line-height:1.35;color:#7fd08a;"><i class="fas fa-clover"></i> ${_esc(String(luckNote))}</div>` : "")
@@ -1486,7 +1516,7 @@ export class DamageEngine {
         await CardDoor.post({
           speaker: ChatMessage.getSpeaker({ actor: attActor }),
           content: _cardHtml,
-          flags:   { [MODULE_ID]: { type: "cleaveAttack" } },
+          flags:   { [MODULE_ID]: { type: "cleaveAttack", actorId: attActor?.id ?? null } },
         }, { dice: true });
       } catch (err) {
         // Non-fatal: the roll result still gates the damage below. Said, not swallowed.

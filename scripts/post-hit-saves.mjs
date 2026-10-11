@@ -1568,15 +1568,20 @@ export class PostHitSaves {
           // Said above, as one line.
         } else if (fx.type === "damage") {
           const color = DamageConstants.DAMAGE_COLORS[fx.damageType] ?? "#ccc";
-          const modBadge = fx.modifier === "immune" ? '<span class="ace-qol-dmg-mod ace-qol-dmg-immune">IMMUNE</span>'
+          // ⚠️ A CREATURE'S DEFENCES AND ITS RAW DAMAGE ARE THE GM'S (his rule,
+          // 2026-10-11): the table sees "5 fire", the damage that landed. The
+          // struck raw number and IMMUNE / ½ RESIST / ×2 VULN are gm-only, so
+          // road/table-view.mjs never sends them to a player.
+          const gm = (html) => html ? `<span class="ace-qol-gm-only">${html}</span>` : "";
+          const modBadge = gm(fx.modifier === "immune" ? '<span class="ace-qol-dmg-mod ace-qol-dmg-immune">IMMUNE</span>'
                          : fx.modifier === "resistant" ? '<span class="ace-qol-dmg-mod ace-qol-dmg-resist">½ RESIST</span>'
                          : fx.modifier === "vulnerable" ? '<span class="ace-qol-dmg-mod ace-qol-dmg-vuln">×2 VULN</span>'
-                         : "";
+                         : "");
           let displayTotal;
           if (fx.modifier === "immune") {
-            displayTotal = `<span style="text-decoration: line-through; text-decoration-color: #ff1744; color: #ccc;">${fx.raw}</span> <strong style="color: #ff1744;">0</strong>`;
+            displayTotal = gm(`<span style="text-decoration: line-through; text-decoration-color: #ff1744; color: #ccc;">${fx.raw}</span> `) + `<strong style="color: #ff1744;">0</strong>`;
           } else if (fx.modifier !== "normal") {
-            displayTotal = `<span style="text-decoration: line-through; text-decoration-color: #ff9100; color: #ccc;">${fx.raw}</span> <strong>${fx.total}</strong>`;
+            displayTotal = gm(`<span style="text-decoration: line-through; text-decoration-color: #ff9100; color: #ccc;">${fx.raw}</span> `) + `<strong>${fx.total}</strong>`;
           } else {
             displayTotal = `${fx.total}`;
           }
@@ -1616,30 +1621,19 @@ export class PostHitSaves {
         }
       }
 
-      // HP line for targets that took damage
+      // ⚠️🔴 NO HIT POINTS ON THIS CARD (his rule, 2026-10-11: "post-hit-saves.mjs
+      // prints HP current, new, and max, and the flags carry currentHP and maxHP.
+      // Those come off."). The damage that landed is said above with its type;
+      // a creature's hit points are read from the creature by whoever applies it.
       const dmgEffects = r.effects.filter(fx => fx.type === "damage");
-      const totalDamage = dmgEffects.reduce((sum, fx) => sum + fx.total, 0);
-      let hpHtml = "";
-      if (totalDamage > 0) {
-        const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
-        const tokenDoc = scene?.tokens?.get(r.tokenDocId);
-        const targetActor = tokenDoc?.actor ?? game.actors.get(r.actorId);
-        const currentHP = targetActor?.system?.attributes?.hp?.value ?? 0;
-        const maxHP = targetActor?.system?.attributes?.hp?.max ?? 0;
-        const newHP = Math.max(0, currentHP - totalDamage);
-        const isDead = newHP <= 0;
-        r._currentHP = currentHP;
-        r._maxHP = maxHP;
-        r._totalDamage = totalDamage;
-        hpHtml = `<div class="ace-qol-dmg-hp">HP: ${currentHP} → ${newHP}/${maxHP}${isDead ? " ☠" : ""}</div>`;
-      }
+      r._totalDamage = dmgEffects.reduce((sum, fx) => sum + fx.total, 0);
 
       // ⚠️ ORDER (his card, 2026-09-29): the save's own result, then what landed
       // ("Prone."), and only then the second roll that chose it. The table roll used
       // to sit in gold between the save's numbers and its verdict, reading as part
       // of the save.
       return `${effectsHtml ? `<div class="ace-qol-posthit-effects">${effectsHtml}</div>` : ""}`
-        + `${tableLine}${hpHtml}`;
+        + `${tableLine}`;
   }
 
   static async postSaveResults(item, actor, results, save, updateMessage = null) {
@@ -1727,8 +1721,6 @@ export class PostHitSaves {
         name: r.name,
         img: r.img,
         totalFinal: r._totalDamage,
-        currentHP: r._currentHP,
-        maxHP: r._maxHP,
         components: r.effects.filter(fx => fx.type === "damage").map(fx => ({
           name: item?.name ?? "", type: fx.damageType, raw: fx.raw, final: fx.total,
           modifier: fx.modifier ?? "normal",
@@ -1908,8 +1900,10 @@ export class PostHitSaves {
               <span class="ace-qol-pst-target">${h.target?.name ?? targetActor.name}</span>
             </div>
             <div class="ace-qol-pst-body">
-              <div class="ace-qol-pst-line">HP ${hpNow} ≤ ${rider.threshold} → <span class="ace-qol-dc" data-dc-roller="${targetActor?.id ?? ""}">DC ${rider.dc} </span>${abilityLabel} save</div>
-              <div class="ace-qol-pst-line">Roll: <strong>${riderTotal}</strong> ${passed ? "✅" : "❌"}</div>
+              ${/* the target's hit points are the GM's, the DC is the wielder's, the
+                   total is the target's (his rule, 2026-10-11) */ ""}
+              <div class="ace-qol-pst-line"><span class="ace-qol-gm-only">HP ${hpNow} ≤ ${rider.threshold} → </span><span class="ace-qol-dc" data-dc-owner="${actor?.id ?? ""}">DC ${rider.dc} </span>${abilityLabel} save</div>
+              <div class="ace-qol-pst-line">${passed ? "✅ Saved" : "❌ Failed"}<span class="ace-qol-bonus" data-bonus-actor="${targetActor?.id ?? ""}"> (rolled <strong>${riderTotal}</strong>)</span></div>
               <div class="ace-qol-pst-line ace-qol-pst-result">${resultLabel}</div>
             </div>
           </div>
@@ -2036,9 +2030,12 @@ export class PostHitSaves {
         const rollDetail = rolls.length === 1
           ? `Roll: <strong>${totals[0]}</strong>`
           : `Rolls: <strong>${totals.join(", ")}</strong> → best <strong>${bestRolled}</strong>`;
+        // Its own hit points are the GM's, a party member's included
+        // (his rule, 2026-10-11: "A player character's AC and hit points stay on my screen").
+        const own = (html) => `<span data-ace-secret="gm">${html}</span>`;
         const resultLine = applied
-          ? `Temp HP: <strong>${currentTemp} → ${newTemp}</strong>`
-          : `Temp HP: <strong>${currentTemp}</strong> (existing pool was higher — no change per RAW)`;
+          ? own(`Temp HP: <strong>${currentTemp} → ${newTemp}</strong>`)
+          : own(`Temp HP: <strong>${currentTemp}</strong> (existing pool was higher — no change per RAW)`);
 
         const html = `
           <div class="ace-qol-postsave-card ace-qol-onkill-rider">
@@ -2095,8 +2092,8 @@ export class PostHitSaves {
           ? `Roll: <strong>${totals[0]}</strong>`
           : `Rolls: <strong>${totals.join(" + ")}</strong> = <strong>${totalRolled}</strong>`;
         const resultLine = actualGain > 0
-          ? `HP: <strong>${currentHP} → ${newHP}</strong> (regained ${actualGain})`
-          : `HP: <strong>${currentHP}</strong> (already at max — no change)`;
+          ? `<span data-ace-secret="gm">HP: <strong>${currentHP} → ${newHP}</strong> (regained ${actualGain})</span>`
+          : `<span data-ace-secret="gm">HP: <strong>${currentHP}</strong> (already at max — no change)</span>`;
 
         const html = `
           <div class="ace-qol-postsave-card ace-qol-onkill-rider">

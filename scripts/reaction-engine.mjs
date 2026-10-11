@@ -1930,13 +1930,14 @@ export class ReactionEngine {
           result.shieldBlocked = true;
           await this._postReactionChat(targetActor, "Shield",
             `${foundry.utils.escapeHTML(targetActor.name)} casts <strong>Shield</strong>: <span class="ace-qol-ac" data-ac-actor="${targetActor?.id ?? ""}">AC ${acBefore} becomes ${acWith}</span>, `
-            + `and ${attackerName}'s ${attackName} (${result.attackTotal}) misses.`, "#42a5f5");
+            // The attack total is the GM's (his rule, 2026-10-11).
+            + `and ${attackerName}'s ${attackName}<span class="ace-qol-gm-only"> (${result.attackTotal})</span> misses.`, "#42a5f5");
         } else {
           // Shield didn't prevent the hit but still grants +5 AC for the round
           this._debug(`Shield CAST but still hit: ${targetActor.name} (${result.attackTotal} vs AC ${acWith})`);
           await this._postReactionChat(targetActor, "Shield",
             `${foundry.utils.escapeHTML(targetActor.name)} casts <strong>Shield</strong>: <span class="ace-qol-ac" data-ac-actor="${targetActor?.id ?? ""}">AC ${acBefore} becomes ${acWith}</span>, `
-            + `but ${attackerName}'s ${attackName} (${result.attackTotal}) still hits.`, "#ef5350");
+            + `but ${attackerName}'s ${attackName}<span class="ace-qol-gm-only"> (${result.attackTotal})</span> still hits.`, "#ef5350");
         }
       }
 
@@ -2642,8 +2643,9 @@ export class ReactionEngine {
         const slotLine = edition === "2024" && activity?.consumption?.spellSlot !== false
           && activity?._aceSlotDeferred !== true && spellLevel > 0
           ? ` ${casterActor.name} keeps the slot.` : "";
+        // The save or check against the DC is the GM's (his rule, 2026-10-11).
         const mechanical = `${reactor.actor.name} counterspells ${casterActor.name}'s ${item.name}!`
-          + `${resultLabel ? ` (${resultLabel})` : ""}${slotLine}`;
+          + `${resultLabel ? `<span class="ace-qol-gm-only"> (${resultLabel})</span>` : ""}${slotLine}`;
         const flavorBlock = `<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #6b5230;font-size:15px;font-style:italic;color:#e1bee7;font-weight:600;">— ${flavorText}</div>`;
         await this._postReactionChat(reactor.actor, "Counterspell",
           `${mechanical}${flavorBlock}`,
@@ -2717,7 +2719,7 @@ export class ReactionEngine {
       //    NEXT reactor. Do NOT resolve the barrier here: that would let the
       //    cast resolve before the next reactor even answers. ──
       await this._postReactionChat(reactor.actor, "Counterspell",
-        `${reactor.actor.name} attempts to counterspell ${casterActor.name}'s ${item.name} but fails!${resultLabel ? ` (${resultLabel})` : ""}`,
+        `${reactor.actor.name} attempts to counterspell ${casterActor.name}'s ${item.name} but fails!${resultLabel ? `<span class="ace-qol-gm-only"> (${resultLabel})</span>` : ""}`,
         "#ef5350");
       this._debug(`Counterspell: ${reactor.actor.name} failed — cascading to the next reactor if any.`);
     }
@@ -3609,7 +3611,8 @@ export class ReactionEngine {
         result.legendaryResistance = true;
 
         await this._postReactionChat(actor, "Legendary Resistance",
-          `${actor.name} uses Legendary Resistance to succeed on the ${result.ability?.toUpperCase() ?? ""} saving throw! (${lrCheck.usesRemaining - 1} remaining)`,
+          // How many it has left is the GM's (his rule, 2026-10-11).
+          `${actor.name} uses Legendary Resistance to succeed on the ${result.ability?.toUpperCase() ?? ""} saving throw!<span class="ace-qol-gm-only"> (${lrCheck.usesRemaining - 1} remaining)</span>`,
           "#ffd54f");
       }
 
@@ -3886,7 +3889,8 @@ export class ReactionEngine {
       const newTotal = total - reduction;
 
       await this._postReactionChat(reactor.actor, "Cutting Words",
-        `${reactor.actor.name} uses Cutting Words! Subtracts ${reduction} (${bardDie}) from ${actor.name}'s ${rollType} (${total} → ${newTotal}).`,
+        // The die is the table's; the roll's total is the GM's (his rule, 2026-10-11).
+        `${reactor.actor.name} uses Cutting Words! Subtracts ${reduction} (${bardDie}) from ${actor.name}'s ${rollType}<span class="ace-qol-gm-only"> (${total} → ${newTotal})</span>.`,
         "#ff8a65");
 
       return { reduced: true, reduction, newTotal };

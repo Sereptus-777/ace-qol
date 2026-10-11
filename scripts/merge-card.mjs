@@ -167,11 +167,15 @@ export class MergeCard {
         const key = mi.hitDuplicate
           ? "ACE_QOL.mirrorImage.redirectHitDestroyed"
           : "ACE_QOL.mirrorImage.redirectHitDodged";
-        const outcome = game.i18n?.format?.(key, { ac: mi.duplicateAC })
-                     ?? (mi.hitDuplicate
-                         ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
-                         : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`);
-        mirrorCaption = `<div class="ace-qol-merge-tgt-caption ace-qol-merge-mirror-caption">→ ${outcome}</div>`;
+        // The die and what happened are the table's; the duplicate's AC is the
+        // GM's (his rule, 2026-10-11), as on the attack card.
+        const outcome = game.i18n?.format?.(key, {})
+                     ?? (mi.hitDuplicate ? "Hit a Mirror Image duplicate — duplicate destroyed"
+                                         : "Hit a Mirror Image duplicate — duplicate dodged");
+        // dc-ok: the duplicate's AC is inside .ace-qol-gm-only, cut from every player's copy.
+        mirrorCaption = `<div class="ace-qol-merge-tgt-caption ace-qol-merge-mirror-caption">`
+          + `Mirror Image: rolled ${mi.rollResult} (needs ${mi.threshold}+). → ${outcome}`
+          + `<span class="ace-qol-gm-only"> Duplicate AC ${mi.duplicateAC}.</span></div>`;
       }
 
       return `
@@ -270,11 +274,17 @@ export class MergeCard {
                       : anyHit ? "ace-qol-result-hit"
                       : "ace-qol-result-miss";
 
+    // ⚠️🔴 THE DIE IS THE TABLE'S; THE CHIPS AND THE TOTAL ARE THE ATTACKER'S
+    // (his rule, 2026-10-11). The bare d20 stays public; the formula and the
+    // total go in the attacker's wrapper. One that names nobody is the GM's.
+    const whose = attackData.actorId ?? attackData.attackerId ?? null;
+    const id = whose ? ` data-bonus-actor="${foundry.utils.escapeHTML(String(whose))}"` : "";
+    const showChips = showFormula && attackData.formulaParts;
     return `
       <div class="ace-qol-merge-attack">
         <div class="ace-qol-atk-roll">
-          <span class="ace-qol-atk-formula">${formulaHtml}</span>
-          <span class="ace-qol-atk-total ${resultClass}">${total}</span>
+          <span class="ace-qol-atk-formula">${d20Html}</span>
+          <span class="ace-qol-bonus"${id}>${showChips ? `<span class="ace-qol-atk-formula">${formulaHtml}</span>` : ""}<span class="ace-qol-atk-total ${resultClass}">${total}</span></span>
         </div>
       </div>
     `;
@@ -456,16 +466,17 @@ export class MergeCard {
         const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
         let modBadge = "";
         let strikeStyle = "";
+        // A creature's defences and its raw damage are the GM's (2026-10-11).
         if (c.modifier === "immune") {
-          modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-immune" style="background:${color}; color:#000">IMMUNE</span>`;
+          modBadge = `<span class="ace-qol-gm-only"><span class="ace-qol-dmg-mod ace-qol-dmg-immune" style="background:${color}; color:#000">IMMUNE</span></span>`;
           strikeStyle = `text-decoration: line-through; text-decoration-color: ${color}; opacity: 0.6;`;
         } else if (c.modifier === "resistant") {
-          modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-resist" style="border-color:${color}; color:${color}">&#189; RESIST</span>`;
+          modBadge = `<span class="ace-qol-gm-only"><span class="ace-qol-dmg-mod ace-qol-dmg-resist" style="border-color:${color}; color:${color}">&#189; RESIST</span></span>`;
         } else if (c.modifier === "vulnerable") {
-          modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-vuln">&times;2 VULN</span>`;
+          modBadge = `<span class="ace-qol-gm-only"><span class="ace-qol-dmg-mod ace-qol-dmg-vuln">&times;2 VULN</span></span>`;
         }
         const dmgDisplay = (c.raw !== c.final && c.modifier !== "normal")
-          ? `<span style="color:#666; text-decoration:line-through; font-size:0.75rem">${c.raw}</span> <strong style="color:${color}">${c.final}</strong>`
+          ? `<span class="ace-qol-gm-only"><span style="color:#666; text-decoration:line-through; font-size:0.75rem">${c.raw}</span> </span><strong style="color:${color}">${c.final}</strong>`
           : `<strong style="color:${color}">${c.final}</strong>`;
         const clickable = c.final > 0
           ? `data-action="aceQolApplyType" data-damage-type="${c.type}" data-damage-amount="${c.final}" data-comp-index="${idx}" title="Click to apply ${c.final} ${c.type} damage"`

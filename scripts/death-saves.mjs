@@ -116,7 +116,9 @@ export class DeathSaves {
             }
             await ChatMessage.create({
               speaker: ChatMessage.getSpeaker({ actor }),
-              content: `<div class="ace-qol-massive-damage-card"><strong>💀 MASSIVE DAMAGE</strong><br/>${actor.name} takes ${overflow} excess damage (max HP ${maxHP}) and dies instantly per PHB 197.</div>`,
+              // The hit points are the GM's, a party member's included (his rule, 2026-10-11: "A player character's AC and hit points stay on my screen").
+              content: `<div class="ace-qol-massive-damage-card"><strong>💀 MASSIVE DAMAGE</strong><br/>${actor.name} dies instantly per PHB 197.`
+                + `<span data-ace-secret="gm"> (${overflow} excess damage, max HP ${maxHP})</span></div>`,
               flags: { [MODULE_ID]: { type: "massiveDamage", actorId: actor.id } },
             });
           } catch (err) {

@@ -1845,12 +1845,15 @@ export class ConcentrationWidget {
     // the dice above, and a card carrying them would be animated a second time.
     try {
       const accent = passed ? "#4ade80" : "#ef4444";
+      // The die and the word are the table's; the bonus and the total are this
+      // creature's (his rule, 2026-10-11).
+      const mine = (html) => `<span class="ace-qol-bonus" data-bonus-actor="${actor?.id ?? ""}">${html}</span>`;
       const verdictText = passed
-        ? `Total ${total} — PASS, clean exit`
-        : `Total ${total} — FAIL, Lingering Nausea applied next turn`;
+        ? `PASS, clean exit`
+        : `FAIL, Lingering Nausea applied next turn`;
       const breakdown = (d20Result != null)
-        ? `<span style="color:#c8b890;font-size:12px;"><i class="fas fa-dice-d20" style="color:#d4af37;margin-right:4px;"></i>${d20Result}${modPart} = <strong style="color:${accent};">${total}</strong></span>`
-        : `<span style="color:${accent};font-weight:bold;">${total}</span>`;
+        ? `<span style="color:#c8b890;font-size:12px;"><i class="fas fa-dice-d20" style="color:#d4af37;margin-right:4px;"></i>${d20Result}${mine(`${modPart} = <strong style="color:${accent};">${total}</strong>`)}</span>`
+        : mine(`<span style="color:${accent};font-weight:bold;">${total}</span>`);
 
       const darkContent = `
         <div style="background:#1a1a1f;color:#e8dfc8;padding:10px 12px;border-radius:5px;border:1px solid #d4af37;font-family:'Signika',sans-serif;">
@@ -1864,6 +1867,7 @@ export class ConcentrationWidget {
       await ChatMessage.create({
         speaker: ChatMessage.getSpeaker({ token: tokenDoc }),
         content: darkContent,
+        flags: { "ace-qol": { type: "areaExitSave", actorId: actor?.id ?? null } },
       });
     } catch (err) {
       // Non-fatal — log and continue with state update
@@ -2321,9 +2325,11 @@ export class ConcentrationWidget {
         <div style="color:#d4af37;font-size:14px;font-weight:bold;margin-bottom:4px;">${spellName} — ${phaseLabel}</div>
         <div style="color:#c8b890;font-size:12px;margin-bottom:4px;">
           <i class="fas fa-dice-d20" style="color:#d4af37;margin-right:4px;"></i>
-          ${formula} = ${rawTotal} → <strong style="color:${accent};">${finalDamage} ${damageType}</strong>${modText}
+          ${/* the damage that landed is the table's; the raw roll, the defence and the
+               hit points are the GM's (his rule, 2026-10-11) */ ""}
+          <span class="ace-qol-gm-only">${formula} = ${rawTotal} → </span><strong style="color:${accent};">${finalDamage} ${damageType}</strong><span class="ace-qol-gm-only">${modText}</span>
         </div>
-        <div style="color:#c8b890;font-size:11px;">HP: ${hp} → <span style="color:${newHP === 0 ? '#ef4444' : '#e8dfc8'};font-weight:${newHP === 0 ? 'bold' : 'normal'};">${newHP}</span>${newHP === 0 ? " ☠" : ""}</div>
+        <div class="ace-qol-gm-only ace-qol-block" style="color:#c8b890;font-size:11px;">HP: ${hp} → <span style="color:${newHP === 0 ? '#ef4444' : '#e8dfc8'};font-weight:${newHP === 0 ? 'bold' : 'normal'};">${newHP}</span>${newHP === 0 ? " ☠" : ""}</div>
       </div>
     `;
 
@@ -2331,6 +2337,7 @@ export class ConcentrationWidget {
       await ChatMessage.create({
         speaker: ChatMessage.getSpeaker({ token: token.document }),
         content,
+        flags: { "ace-qol": { type: "areaDamage", actorId: actor?.id ?? null } },
         // ⚠️ NO `rolls` HERE. ACE threw these dice above, and Dice So Nice
         // animates any card that carries its rolls, so the same dice tumbled twice.
       });
@@ -2624,7 +2631,8 @@ export class ConcentrationWidget {
         : modifier === "resistant"  ? ` <span style="${badgeStyle}background:#3a567a;color:#d0e3ff">RESIST &frac12;</span>`
         : modifier === "vulnerable" ? ` <span style="${badgeStyle}background:#7a2d2d;color:#ffd0d0">VULN &times;2</span>`
         : "";
-      const reasonLine = modReason ? `<br><em style="opacity:.7">${modReason}</em>` : "";
+      // Why the damage changed names a defence, which is the GM's (2026-10-11).
+      const reasonLine = modReason ? `<em class="ace-qol-gm-only" style="opacity:.7"><br>${modReason}</em>` : "";
       const appliedTag = applied
         ? ` <span style="${badgeStyle}background:#1e6b1e;color:#e8ffe8">APPLIED</span>`
         : (finalDamage === 0 ? "" : ` <span style="${badgeStyle}background:#5a5a5a;color:#ddd">NOT APPLIED</span>`);
@@ -2643,9 +2651,11 @@ export class ConcentrationWidget {
       const flavor = `<div style="${cardStyle}">`
                    + `<strong style="color:#d4af37">${tracker.item?.name ?? "Persistent area"}</strong>`
                    + ` &mdash; ${token.name} moved ${displayFt} feet through area${appliedTag}`
-                   + `<br><em style="color:#a8aab2">${ticks} × ${formulaPerTick} ${damageType} = ${rawTotal}${modBadge}`
-                   + (modifier !== "normal" ? ` → <strong style="color:#fff">${finalDamage}</strong>` : "")
-                   + `</em>${reasonLine}`
+                   // The damage that landed is the table's; the formula, the raw
+                   // roll and the defence that changed it are the GM's (2026-10-11).
+                   + `<br><strong style="color:#fff">${finalDamage} ${damageType}</strong>`
+                   + `<em class="ace-qol-gm-only" style="color:#a8aab2"> (${ticks} × ${formulaPerTick} = ${rawTotal}${modBadge})</em>`
+                   + `${reasonLine}`
                    + `</div>`;
 
       // UNDO button row — only shown when damage was actually applied (no
@@ -2653,7 +2663,7 @@ export class ConcentrationWidget {
       // disabled-on-click after firing; the `undone` flag persists across
       // page reloads so a re-render still shows the disabled state.
       const undoBtnHtml = applied
-        ? `<div style="margin-top:6px;text-align:right;">
+        ? `<div class="ace-qol-gm-only" style="margin-top:6px;text-align:right;">
              <button type="button"
                      class="ace-qol-mvmt-undo"
                      style="padding:3px 10px;font-size:0.85em;font-weight:bold;letter-spacing:0.5px;background:#3a2727;color:#ffcdcd;border:1px solid #6a3a3a;border-radius:3px;cursor:pointer;">
@@ -2677,6 +2687,10 @@ export class ConcentrationWidget {
             spellName: tracker.item?.name ?? "Persistent area",
             tokenDocId: token.document?.id,
             actorUuid: tgtActor?.uuid ?? null,
+            // ⚠️ WHOSE HIT POINTS THESE ARE (2026-10-11). Without it the one
+            // function (road/table-view.mjs) gave the pre-damage hit points to the
+            // card's speaker, the area's caster; they are the target's.
+            targetId: tgtActor?.id ?? null,
             sceneId: canvas.scene?.id ?? null,
             damageApplied: applied ? finalDamage : 0,
             damageFormula: formula,

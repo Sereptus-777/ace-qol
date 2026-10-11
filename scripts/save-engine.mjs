@@ -3437,7 +3437,7 @@ export class SaveEngine {
    * header, which is how that one still had a DC pill on it.
    */
   static castLineHtml(casterActor, title, targetNames, { isSpell = true, fallbackImg = null,
-      dcText = "", rollers = null } = {}) {
+      dcText = "", rollers = null, verb = null, dcWhose = undefined } = {}) {
     const who = casterActor?.name ?? "Someone";
     const img = faceOf(casterActor);
     const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
@@ -3447,7 +3447,7 @@ export class SaveEngine {
     return `<div class="ace-qol-save-cast-line">`
       + `${img ? `<img class="ace-qol-save-caster-img ace-qol-save-portrait" src="${img}" alt="" />` : ""}`
       + `<span class="ace-qol-save-cast-text">`
-      + `<strong>${esc(who)}</strong> ${isSpell ? "casts" : "uses"} <strong>${esc(title)}</strong>`
+      + `<strong>${esc(who)}</strong> ${verb ? esc(verb) : (isSpell ? "casts" : "uses")} <strong>${esc(title)}</strong>`
       + `${targetNames ? ` on <strong>${targetNames}</strong>` : ""}`
       /* ⚠️🔴 A PARTY MEMBER'S OWN DC IS THE TABLE'S (his rule, 2026-10-06: "If one
          of the party cast it, the table also sees his formula and his DC. Firaxis
@@ -3455,8 +3455,9 @@ export class SaveEngine {
          creatures rolling against Firaxis's Fireball are the GM's, so his own
          save DC was kept from his own table. Who it BELONGS to is the second
          question, and a dragon's DC 18 is still nobody's but his. */
+      // A DC somebody else set (a check the GM called for) is theirs: dcWhose: null.
       + `${dcText ? dcSpan(` · ${dcText}`, rollers, "ace-qol-save-cast-dc",
-            { whose: casterActor?.id ?? null }) : ""}`
+            { whose: dcWhose === undefined ? (casterActor?.id ?? null) : dcWhose }) : ""}`
       + `</span>`
       + `</div>`;
   }
@@ -3729,9 +3730,11 @@ export class SaveEngine {
         else if (mod?.modifier === "vulnerable") hasVuln = true;
       }
       // Immune takes priority, then resist, then vuln
-      if (hasImmune) return { cls: "ace-qol-tgt-immune", tag: '<span class="ace-qol-tag ace-qol-tag-immune"><i class="fas fa-shield-halved"></i> IMMUNE</span>' };
-      if (hasResist) return { cls: "ace-qol-tgt-resist", tag: '<span class="ace-qol-tag ace-qol-tag-resist"><i class="fas fa-shield-halved"></i> RESIST</span>' };
-      if (hasVuln) return { cls: "ace-qol-tgt-vuln", tag: '<span class="ace-qol-tag ace-qol-tag-vuln"><i class="fas fa-burst"></i> VULN</span>' };
+      // ⚠️ A CREATURE'S DEFENCES ARE THE GM'S (his rule, 2026-10-11: the tag row is
+      // not public). gm-only, so road/table-view.mjs never sends them to a player.
+      if (hasImmune) return { cls: "ace-qol-tgt-immune", tag: '<span class="ace-qol-gm-only"><span class="ace-qol-tag ace-qol-tag-immune"><i class="fas fa-shield-halved"></i> IMMUNE</span></span>' };
+      if (hasResist) return { cls: "ace-qol-tgt-resist", tag: '<span class="ace-qol-gm-only"><span class="ace-qol-tag ace-qol-tag-resist"><i class="fas fa-shield-halved"></i> RESIST</span></span>' };
+      if (hasVuln) return { cls: "ace-qol-tgt-vuln", tag: '<span class="ace-qol-gm-only"><span class="ace-qol-tag ace-qol-tag-vuln"><i class="fas fa-burst"></i> VULN</span></span>' };
       return { cls: "", tag: "" };
     };
 
@@ -3792,7 +3795,9 @@ export class SaveEngine {
         console.warn(`${MODULE_ID} | could not read what made ${t.name}'s save bonus, `
           + `so the card shows the total alone:`, err);
       }
-      return `<span class="ace-qol-save-tgt-mod">${formula}</span>${bonusChips}`;
+      // ⚠️ THE BONUS IS ITS CREATURE'S (his rule, 2026-10-11). The whole line,
+      // formula and chips, is that creature's owner's and the GM's.
+      return bonusSpan(`<span class="ace-qol-save-tgt-mod">${formula}</span>${bonusChips}`, t.actorId ?? null);
     };
 
     // ── Helper: glowing black-d20 ROLL button for a PC (GM rolls on their behalf) ──
@@ -4734,10 +4739,10 @@ export class SaveEngine {
         sourceImg: f.casterImg ?? null,
         rollerName: tokenDoc?.name ?? f.targetName ?? actor.name,
         rollerImg: faceOf(actor) || f.targetImg || "",
-        // § 13.2: he is rolling against this number, so the button says it.
-        pillLabel: Number.isFinite(Number(f.saveDC))
-          ? `Roll ${abilityLabel} save (DC ${f.saveDC})`
-          : `Roll ${abilityLabel} save`,
+        // ⚠️ NO DC ON THE BUTTON (his rule, 2026-10-11, superseding § 13.2's "he is
+        // rolling against this number"): a player sees the die and the word, and a
+        // DC that is not their own creature's is not theirs to read.
+        pillLabel: `Roll ${abilityLabel} save`,
         match: { kind: "save", castId: f.castId ?? null, tokenDocId: f.tokenDocId ?? null },
         lucky,
         onRoll: async () => {
@@ -6018,12 +6023,16 @@ export class SaveEngine {
       .replace(/\s*[\u2014-]+\s*no save\s*$/i, "").trim().toLowerCase();
     const whats = [...new Set(rows.map(whatOf))];
     const one = whats.length === 1 && whats[0];
-    const names = rows.map(r => `<span title="${esc(r.noRollLabel ?? "")}" style="color:#ffffff;font-weight:700;">`
-      + `${esc(r.name)}${one ? "" : ` (${esc(whatOf(r) || "immune")})`}</span>`).join(", ");
+    // ⚠️ WHAT A CREATURE IS IMMUNE TO IS THE GM'S (his rule, 2026-10-11: the tag
+    // row is not public, IMMUNE included). The table reads that it made no save;
+    // why is on the GM's half. No reason in a hover title either: that is in the HTML.
+    const names = rows.map(r => `<span style="color:#ffffff;font-weight:700;">`
+      + `${esc(r.name)}${one ? "" : `<span class="ace-qol-gm-only"> (${esc(whatOf(r) || "immune")})</span>`}</span>`).join(", ");
     return `<div class="ace-qol-save-immune-line" data-immune-count="${rows.length}"
                  style="display:flex;align-items:baseline;flex-wrap:wrap;gap:6px;padding:9px 12px;border-bottom:1px solid rgba(212,175,55,0.15);font-size:16px;line-height:1.35;">
         <i class="fas fa-shield-halved" style="color:#ffaa44;font-size:14px;"></i>
-        <span style="color:#ffaa44;font-weight:700;">${one ? `Immune to ${esc(one)}, no save:` : "Immune, no save:"}</span>
+        <span style="color:#ffaa44;font-weight:700;">No save:</span>
+        ${one ? `<span class="ace-qol-gm-only" style="color:#ffaa44;">immune to ${esc(one)}</span>` : ""}
         <span>${names}</span>
       </div>`;
   }
@@ -6237,10 +6246,11 @@ export class SaveEngine {
       if (luckyFeatItem(targetActor)) {
         try {
           const got = await luckOwnRoll({ actor: targetActor, kind: "save",
-            what: `${CONFIG.DND5E?.abilities?.[ability]?.label ?? ability} save (DC ${saveDC})`,
+            // No DC in the words a player reads (his rule, 2026-10-11).
+            what: `${CONFIG.DND5E?.abilities?.[ability]?.label ?? ability} save`,
             d20s: (roll.dice?.[0]?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result)),
             kept: naturalD20(roll), total: saveTotal,
-            judge: (t) => ({ fails: t < saveDC, words: `${t} against DC ${saveDC}, ${t >= saveDC ? "saved" : "failed"}` }),
+            judge: (t) => ({ fails: t < saveDC, words: `${t >= saveDC ? "saved" : "failed"}` }),
             dice: "ours" });
           if (got.spent) {
             saveTotal = got.total;
@@ -7085,11 +7095,20 @@ export class SaveEngine {
       // before the result card or anything it decides (luck.mjs).
       if (luckyFeatItem(targetActor)) {
         try {
+          // ⚠️ No DC in the words (his rule, 2026-10-11): a player is told the save
+          // failed, which is what Lucky asks about, not the number it failed against.
+          // ⚠️🔴 A CREATURE'S DC IS NOT ON A PLAYER'S SCREEN (road/table-view.mjs), and
+          // a total judged against nothing is "already a success", so Lucky was never
+          // offered. Without the DC the player decides from the die, as the 2014 feat
+          // reads ("after you roll the die, but before the outcome is determined").
+          const dcHere = Number.isFinite(Number(saveDC)) && saveDC !== null && saveDC !== "";
           const got = await luckOwnRoll({ actor: targetActor, kind: "save",
-            what: `${abilityLabel} save (DC ${saveDC})`,
+            what: `${abilityLabel} save`,
             d20s: (roll.dice?.[0]?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result)),
             kept: naturalD20(roll), total: saveTotal,
-            judge: (t) => ({ fails: t < saveDC, words: `${t} against DC ${saveDC}, ${t >= saveDC ? "saved" : "failed"}` }),
+            judge: (t) => dcHere
+              ? { fails: t < saveDC, words: `${t >= saveDC ? "saved" : "failed"}` }
+              : { fails: true, words: "the DC is the GM's" },
             dice: "ours" });
           if (got.spent) {
             saveTotal = got.total;
@@ -7154,9 +7173,10 @@ export class SaveEngine {
             <div style="margin-top:6px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
               ${autoFailSave
                 ? `<span style="color:${passColor};font-weight:700;font-size:18px;">AUTO-FAIL</span>`
-                : `<span style="color:#fff;font-size:20px;font-weight:700;">${dieResult ?? saveTotal}</span>
-                   <span style="color:#b9a978;font-size:15px;">${_bdPart} =</span>
-                   <span style="color:${passColor};font-size:20px;font-weight:700;">${saveTotal}</span>`}
+                : `<span style="color:#fff;font-size:20px;font-weight:700;">${dieResult ?? "?"}</span>`
+                  // The bonus and the total are this creature's (his rule, 2026-10-11).
+                  + bonusSpan(`<span style="color:#b9a978;font-size:15px;">${_bdPart} =</span>
+                   <span style="color:${passColor};font-size:20px;font-weight:700;">${saveTotal}</span>`, actorId ?? null)}
               <span style="margin-left:4px;padding:2px 9px;border-radius:5px;background:${passed ? 'rgba(0,230,118,0.15)' : 'rgba(255,23,68,0.15)'};color:${passColor};font-weight:700;font-size:15px;">${resultLabel}</span>
             </div>
             ${luck?.note ? `<div style="margin-top:6px;color:#7fd08a;font-size:15px;line-height:1.3;"><i class="fas fa-clover"></i> ${foundry.utils.escapeHTML(String(luck.note))}</div>` : ""}
@@ -7260,6 +7280,23 @@ export class SaveEngine {
   //  GM: Handle PC Save Result Posted (from renderChatMessage hook)
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * The DC of a cast, from the GM's own whole copy of its cards: the result
+   * itself, the player's prompt, or the cast's target list.
+   */
+  static _gmDCForCast(castId, resultFlags = {}) {
+    const n = (v) => (v === null || v === undefined || v === "") ? NaN : Number(v);
+    if (Number.isFinite(n(resultFlags.saveDC))) return n(resultFlags.saveDC);
+    if (!castId) return NaN;
+    for (const m of [...(game.messages ?? [])].reverse()) {
+      const f = m.flags?.[MODULE_ID];
+      if (f?.castId !== castId) continue;
+      if (Number.isFinite(n(f.saveDC))) return n(f.saveDC);
+      if (Number.isFinite(n(f.save?.dc))) return n(f.save.dc);
+    }
+    return NaN;
+  }
+
   _onPcSaveResultPosted(resultFlags) {
     console.log(`${MODULE_ID} | _onPcSaveResultPosted fired for tokenDocId:`, resultFlags.tokenDocId, "passed:", resultFlags.passed);
     /* ⚠️🔴 THE DIE AND THE PARTS ARE READ OUT HERE OR THEY ARE LOST. This
@@ -7268,8 +7305,30 @@ export class SaveEngine {
        out as a bare 15 and Virric a bare 12 while every NPC beside them carried
        a die and a line (his table, 2026-10-02: "A player's result carries the
        same die and the same parts, and the row draws them"). */
-    const { tokenDocId, saveTotal, dieResult, passed, autoFailSave, superSaver,
+    const { tokenDocId, saveTotal, dieResult, autoFailSave, superSaver,
             saveParts, saveBonusUsed } = resultFlags;
+
+    /* ⚠️🔴 THE GM JUDGES IT (2026-10-11). A player's screen judged its own save
+       against the DC on its own copy of the card. Since his rule took a DC off
+       every card that is not the caster's (road/table-view.mjs), a player's copy
+       can lack it, and a save judged against nothing reads FAILED every time. The
+       GM holds the DC, so the verdict is the GM's: the player's word is only used
+       when the GM can find no DC for this cast either. */
+    let passed = resultFlags.passed;
+    if (!autoFailSave && typeof saveTotal === "number") {
+      const dc = SaveEngine._gmDCForCast(resultFlags.castId, resultFlags);
+      if (Number.isFinite(dc)) {
+        const judged = saveTotal >= dc;
+        if (judged !== passed) {
+          console.log(`${MODULE_ID} | ${resultFlags.tokenDocId}'s save of ${saveTotal} against DC ${dc} is `
+            + `${judged ? "a success" : "a failure"}; the roller's screen said otherwise. The GM's stands.`);
+        }
+        passed = judged;
+      } else {
+        console.warn(`${MODULE_ID} | no DC is on this screen for cast ${resultFlags.castId}, so the roller's `
+          + `own verdict (${passed ? "saved" : "failed"}) stands.`);
+      }
+    }
 
     // The player rolled — stand the GM nudge down before it ever fires, and
     // retire the card if it already did.
@@ -8944,7 +9003,7 @@ export class SaveEngine {
           + `than none.`);
         return "";
       }
-      return rolledPill(parts);
+      return rolledPill(parts, r.actorId ?? null);
     } catch (err) {
       console.warn(`${MODULE_ID} | could not read what made ${r?.name}'s save bonus, `
         + `so its row shows the total alone:`, err);
@@ -9083,8 +9142,13 @@ export class SaveEngine {
         `;
       }
 
-      const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
-      const verdictText = r.passed ? "PASS" : "FAIL";
+      // ⚠️ A ROLL WITH NOTHING TO BEAT HAS NO VERDICT (2026-10-11, the check card
+      // folded into this row). A skill check with no DC is a die and nothing
+      // else on the table; inventing PASS for it would be a lie. A contest says
+      // WON or LOST through `verdictText`.
+      const neutral = r.passed == null && !r.verdictText;
+      const passClass = neutral ? "ace-qol-save-neutral" : (r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail");
+      const verdictText = r.verdictText ?? (r.passed ? "PASS" : "FAIL");
 
       // ── TWO ROWS, NOT THREE (his card, 2026-09-30) ────────────────────
       //
@@ -9159,7 +9223,7 @@ export class SaveEngine {
           <div class="ace-qol-save-row-result">
             ${d20El}
             ${mathLine}
-            <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
+            ${neutral ? "" : `<span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>`}
           </div>
           ${SaveEngine._advTagsHtml(r)}
           ${opts?.formulaOnShell ? "" : SaveEngine._formulaForRow(r, opts)}
@@ -9907,9 +9971,10 @@ export class SaveEngine {
         else if (m?.modifier === "resistant")  re = true;
         else if (m?.modifier === "vulnerable") vu = true;
       }
-      if (im) return { cls: "ace-qol-tgt-immune", tag: '<span class="ace-qol-tag ace-qol-tag-immune"><i class="fas fa-shield-halved"></i> IMMUNE</span>' };
-      if (re) return { cls: "ace-qol-tgt-resist", tag: '<span class="ace-qol-tag ace-qol-tag-resist"><i class="fas fa-shield-halved"></i> RESIST</span>' };
-      if (vu) return { cls: "ace-qol-tgt-vuln",   tag: '<span class="ace-qol-tag ace-qol-tag-vuln"><i class="fas fa-burst"></i> VULN</span>' };
+      // A creature's defences are the GM's (his rule, 2026-10-11).
+      if (im) return { cls: "ace-qol-tgt-immune", tag: '<span class="ace-qol-gm-only"><span class="ace-qol-tag ace-qol-tag-immune"><i class="fas fa-shield-halved"></i> IMMUNE</span></span>' };
+      if (re) return { cls: "ace-qol-tgt-resist", tag: '<span class="ace-qol-gm-only"><span class="ace-qol-tag ace-qol-tag-resist"><i class="fas fa-shield-halved"></i> RESIST</span></span>' };
+      if (vu) return { cls: "ace-qol-tgt-vuln",   tag: '<span class="ace-qol-gm-only"><span class="ace-qol-tag ace-qol-tag-vuln"><i class="fas fa-burst"></i> VULN</span></span>' };
       return { cls: "", tag: "" };
     };
 
@@ -9935,7 +10000,7 @@ export class SaveEngine {
         <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
         <div class="ace-qol-save-tgt-identity">
           <span class="ace-qol-save-tgt-name">${t.name}</span>
-          <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
+          ${/* the bonus is this creature's (his rule, 2026-10-11) */ bonusSpan(`<span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>`, t.actorId ?? null)}
         </div>
         <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}"><i class="fas fa-xmark"></i></button>
         ${buildActionsRow(t, false)}
@@ -9947,7 +10012,7 @@ export class SaveEngine {
         <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
         <div class="ace-qol-save-tgt-identity">
           <span class="ace-qol-save-tgt-name">${t.name}</span>
-          <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
+          ${/* the bonus is this creature's (his rule, 2026-10-11) */ bonusSpan(`<span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>`, t.actorId ?? null)}
         </div>
         <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}" title="Remove this PC from the save list">
           <i class="fas fa-xmark"></i>
@@ -10213,15 +10278,17 @@ export class SaveEngine {
         if (d20Face != null && modifier != null) {
           const modSign = modifier >= 0 ? "+" : "";
           const modPart = modifier === 0 ? "" : ` ${modSign}${modifier}`;
+          // ⚠️ THE DIE IS THE TABLE'S, THE BONUS AND TOTAL ARE THE ROLLER'S (his
+          // rule, 2026-10-11), as on the phase-1 row this redraws.
           rollDisplay = `
             <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:7px;font-family:'Signika',sans-serif;">
               ${aceD20FaceImg(d20Face, { size: 34 })}
               <span style="color:#ffffff;font-size:18px;font-weight:700;">${d20Face}</span>
-              <span style="color:#b9a978;font-size:15px;">${modPart} =</span>
-              <span class="${passClass}" style="font-weight:700;font-size:18px;">${r.saveTotal}</span>
+              ${bonusSpan(`<span style="color:#b9a978;font-size:15px;">${modPart} =</span>`
+                + ` <span class="${passClass}" style="font-weight:700;font-size:18px;">${r.saveTotal}</span>`, r.actorId ?? null)}
             </span>`;
         } else {
-          rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;
+          rollDisplay = bonusSpan(`<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`, r.actorId ?? null);
         }
       }
 
@@ -10489,7 +10556,9 @@ export class SaveEngine {
                   <span class="ace-qol-save-note-who">${whoTxt}</span>
                 </div>`;
       });
-      return `<div class="ace-qol-save-notes">
+      // ⚠️ THE GM'S (his rule, 2026-10-11: the table sees no bonus). A footnote
+      // sums every creature's modifiers, so it cannot be any one owner's.
+      return `<div class="ace-qol-save-notes ace-qol-gm-only">
                 <div class="ace-qol-save-notes-head">Modifiers applied</div>
                 ${lines.join("")}
               </div>`;
@@ -10627,14 +10696,15 @@ export class SaveEngine {
         ? dmgReasons.map(dr => `<div class="ace-qol-save-mod-reason">${dr}</div>`).join("")
         : "";
 
-      // Inline badge for immune/resist/vuln
+      // Inline badge for immune/resist/vuln. A creature's defences are the GM's
+      // (his rule, 2026-10-11: the tag row is not public).
       const inlineBadge = dmgReasons.length
-        ? dmgReasons.map(dr => {
+        ? `<span class="ace-qol-gm-only">` + dmgReasons.map(dr => {
             if (dr.includes("IMMUNE")) return '<span class="ace-qol-save-inline-badge immune">IMMUNE</span>';
             if (dr.includes("RESIST")) return '<span class="ace-qol-save-inline-badge resist">½</span>';
             if (dr.includes("VULN")) return '<span class="ace-qol-save-inline-badge vuln">×2</span>';
             return "";
-          }).join("")
+          }).join("") + `</span>`
         : "";
 
       const verdictText = r.passed ? "PASS" : "FAIL";

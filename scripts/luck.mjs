@@ -289,11 +289,20 @@ async function untilDiceLand(dice) {
  * @param {"armed"|"ours"|"none"} [o.dice]
  * @returns {Promise<{d20:number, total:number, changed:boolean, spent:boolean, cancelled?:boolean, note?:string}>}
  */
+/* ⚠️🔴 NO DC IN WHAT THE ROLLER READS (his rule, 2026-10-11: a player sees the
+   die and the word). Fifteen callers name the roll "Dexterity save (DC 15)" and
+   judge it "18 against DC 15, a success"; the prompt and its choices are on the
+   roller's screen, so the DC is taken out here, once, for all of them. The GM's
+   note keeps every word. */
+const noDC = (t) => String(t ?? "")
+  .replace(/\s*\((?:vs\.?\s*)?DC\s*\d+\)/gi, "")
+  .replace(/\s*against DC \d+,?/gi, ",");
+
 export async function ownRoll(o) {
   const { actor, kind, what, kept, total, judge } = o;
   // What the player's line calls the roll: the weapon for an attack, else the
   // roll's own name. Never the target, never the number it was against.
-  const subject = o.subject ?? `Your ${what}`;
+  const subject = o.subject ?? `Your ${noDC(what)}`;
   const unchanged = { d20: kept, total, changed: false, spent: false };
   const feat = luckyFeat(actor);
   if (!feat) {
@@ -345,11 +354,11 @@ export async function ownRoll(o) {
     const choices = toneChoices(faces.map(f => {
       const t = total - kept + f;
       const j = judge(t, f);
-      return { id: String(f), label: `Keep ${f}`, sub: `${t}, ${j.words}`, score: (j.fails ? 0 : 1) * 10000 + t };
+      return { id: String(f), label: `Keep ${f}`, sub: `${t}, ${noDC(j.words)}`, score: (j.fails ? 0 : 1) * 10000 + t };
     }));
     const picked = await askChoice({
       reactorActor: actor, reactorToken: actor.getActiveTokens?.()[0] ?? null,
-      description: `Your luck die shows ${fresh}. Which d20 does your ${what} use?`,
+      description: `Your luck die shows ${fresh}. Which d20 does your ${noDC(what)} use?`,
       choices,
     });
     if (picked == null) say(`${nameOf(actor)} closed the choice without picking, so the roll keeps ${kept}.`);

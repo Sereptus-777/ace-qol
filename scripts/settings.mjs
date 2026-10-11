@@ -69,7 +69,7 @@ const PRESETS = {
     enableCoverCalculation: true, creatureAsCover: false, showCoverIndicator: true,
     ignoreCoverForAdjacent: true,
     enableBloodied: true, announceBloodied: true, enableDeadMarker: true,
-    hideSaveDC: false, hideNPCNames: false, playersSeeBloodied: true,
+    playersSeeBloodied: true,
   },
   recommended: {
     autoCheckHit: true, autoTargetTemplates: true, damageTypeSeparation: true,
@@ -88,7 +88,7 @@ const PRESETS = {
     enableCoverCalculation: true, creatureAsCover: false, showCoverIndicator: true,
     ignoreCoverForAdjacent: true,
     enableBloodied: true, announceBloodied: true, enableDeadMarker: true,
-    hideSaveDC: false, hideNPCNames: false, playersSeeBloodied: true,
+    playersSeeBloodied: true,
   },
   minimal: {
     autoCheckHit: true, autoTargetTemplates: false, damageTypeSeparation: true,
@@ -107,7 +107,7 @@ const PRESETS = {
     enableCoverCalculation: false, creatureAsCover: false, showCoverIndicator: false,
     ignoreCoverForAdjacent: true,
     enableBloodied: true, announceBloodied: false, enableDeadMarker: true,
-    hideSaveDC: false, hideNPCNames: false, playersSeeBloodied: true,
+    playersSeeBloodied: true,
   },
   full: {
     autoCheckHit: true, autoTargetTemplates: true, damageTypeSeparation: true,
@@ -126,7 +126,7 @@ const PRESETS = {
     enableCoverCalculation: true, creatureAsCover: true, showCoverIndicator: true,
     ignoreCoverForAdjacent: true,
     enableBloodied: true, announceBloodied: true, enableDeadMarker: true,
-    hideSaveDC: false, hideNPCNames: false, playersSeeBloodied: true,
+    playersSeeBloodied: true,
   },
 };
 
@@ -1573,69 +1573,11 @@ export class QolSettings {
       default: false,
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  ROLL VISIBILITY CONTROLS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    s("npcAttackVisibility", {
-      name:    "NPC Attack Roll Visibility",
-      hint:    "What players see when NPCs make attack rolls. Public: full details. Result Only: Hit/Miss but not the number. GM Only: players see nothing.",
-      scope:   "world",
-      config:  false,
-      type:    String,
-      default: "public",
-      choices: {
-        public:     "Public — players see full roll details",
-        resultOnly: "Result Only — players see Hit/Miss, not the roll",
-        gmOnly:     "GM Only — hidden from players entirely",
-      },
-    });
-
-    s("npcDamageVisibility", {
-      name:    "NPC Damage Roll Visibility",
-      hint:    "What players see when NPCs deal damage. Public: full details. Result Only: damage type but not the number. GM Only: hidden.",
-      scope:   "world",
-      config:  false,
-      type:    String,
-      default: "public",
-      choices: {
-        public:     "Public — players see full damage details",
-        resultOnly: "Result Only — players see type labels, not totals",
-        gmOnly:     "GM Only — hidden from players entirely",
-      },
-    });
-
-    s("npcSaveVisibility", {
-      name:    "NPC Save Roll Visibility",
-      hint:    "What players see when NPCs make saving throws.",
-      scope:   "world",
-      config:  false,
-      type:    String,
-      default: "public",
-      choices: {
-        public:     "Public — players see full save details",
-        resultOnly: "Result Only — players see Pass/Fail, not the roll",
-        gmOnly:     "GM Only — hidden from players entirely",
-      },
-    });
-
-    s("hideSaveDC", {
-      name:    "Hide Save DC from Players",
-      hint:    "Replace save DCs with 'DC ???' in chat messages visible to players. Prevents metagaming save difficulty.",
-      scope:   "world",
-      config:  false,
-      type:    Boolean,
-      default: false,
-    });
-
-    s("hideNPCNames", {
-      name:    "Hide NPC Names in Rolls",
-      hint:    "Replace NPC names with '???' in attack/damage/save cards. Prevents players from identifying unknown creatures.",
-      scope:   "world",
-      config:  false,
-      type:    Boolean,
-      default: false,
-    });
+    // ⚠️ ROLL VISIBILITY IS NOT A CHECKBOX (his rule, 2026-10-11: "Hide Save DC,
+    // Hide NPC Names, and the three NPC visibility settings do not match the
+    // classes on the cards, and applyVisibility is never called. Delete them.
+    // The rule above is not a checkbox."). What a player sees is decided by one
+    // function, road/table-view.mjs, for every card.
 
     s("playersSeeBloodied", {
       name:    "Players See Bloodied Indicators",
@@ -2153,7 +2095,6 @@ export class QolSettings {
       "mergeCardStyle", "showAttackFormula", "showDamageFormula", "critRule",
       "optionalPromptTimeout", "coverCalculationMethod",
       "bloodiedThreshold", "bloodiedIndicatorStyle", "bloodiedVisibleTo",
-      "npcAttackVisibility", "npcDamageVisibility", "npcSaveVisibility",
     ];
     for (const key of subSettings) {
       const row = el.querySelector(`div.form-group:has([name="${MODULE_ID}.${key}"])`);
@@ -2187,7 +2128,6 @@ export class QolSettings {
         enableDurationTracker:  "⏱️ Duration Tracking",
         enableCoverCalculation: "🏰 Cover",
         enableBloodied:         "🩸 Bloodied & Death",
-        npcAttackVisibility:    "👁️ Roll Visibility",
       };
       for (const [settingKey, label] of Object.entries(sections)) {
         const row = el.querySelector(`div.form-group:has([name="${MODULE_ID}.${settingKey}"])`);

@@ -167,10 +167,15 @@ console.log("\nNO PILL, NO X, NO SKULL");
   // what 0.58 shipped). "Header: 'Jeth uses Spiked Chain on Escher · DC 14
   // Dexterity'", and "Do not hide Lamia's DC 13 on Jeth's Charm card. He is
   // rolling against it."
-  check("the DC is on the header, named for the creatures rolling against it",
-    /dcSpan\(` · \$\{dcText\}`, rollers, "ace-qol-save-cast-dc"\)/.test(save)
+  // ⚠️ REVERSED 2026-10-11 (his rule: "They do not see a bonus, a DC... Their own
+  // spell still shows their own formula and their own DC."). The header's DC is
+  // wrapped as its CASTER's; road/table-view.mjs leaves a player character's on
+  // the card and keeps a creature's on the GM's screen, never on the copy of the
+  // creatures rolling against it.
+  check("the DC is on the header, wrapped as its caster's",
+    /dcSpan\(` · \$\{dcText\}`, rollers, "ace-qol-save-cast-dc",\s*\{ whose: dcWhose === undefined \? \(casterActor\?\.id \?\? null\) : dcWhose \}\)/.test(save)
     && /rollers: SaveEngine\.rollersOn\(results\)/.test(save),
-    "shown to them and to the GM");
+    "a player character's for the table, a creature's for the GM");
   check("and the old quiet-line DC is gone, so it lives in one place",
     !/ace-qol-save-quiet-dc/.test(save), "not two");
   // The per-handler stamp is gone: it only covered the cards that ONE handler
@@ -430,9 +435,10 @@ console.log("\nONE STYLE ONLY");
 // stay. A player sees the DC on a roll they are making."
 console.log("\nTHE DCs STAY");
 {
-  check("the header's DC still names the creatures rolling against it",
-    /dcSpan\(` · \$\{dcText\}`, rollers, "ace-qol-save-cast-dc"\)/.test(save),
-    "Jeth reads Lamia's 13");
+  // REVERSED 2026-10-11: Jeth no longer reads Lamia's 13; it is Lamia's.
+  check("the header's DC is the caster's, not the creatures rolling against it",
+    /dcSpan\(` · \$\{dcText\}`, rollers, "ace-qol-save-cast-dc",\s*\{ whose: dcWhose === undefined \? \(casterActor\?\.id \?\? null\) : dcWhose \}\)/.test(save),
+    "Lamia's 13 is Lamia's");
   check("and the whispered prompt reads the way he wrote it",
     /Roll a \$\{abilityLabel\} save \$\{dcSpan\(`\(DC \$\{saveDC\}\)`, tgt\?\.actorId\)\}/.test(save),
     "Roll a Wisdom save (DC 13)");
@@ -547,9 +553,10 @@ console.log("\nTHE ROLL BOX");
     "below the d20, never over it");
   check("a portrait is shown whole inside its frame",
     /\.acp-portrait \{[\s\S]{0,120}object-fit: contain;/.test(box), "Lamia's art is not clipped");
-  check("the button names the DC he is rolling against",
-    /pillLabel: Number\.isFinite\(Number\(f\.saveDC\)\)/.test(save)
-    && /Roll \$\{abilityLabel\} save \(DC \$\{f\.saveDC\}\)/.test(save), "Roll Wisdom save (DC 13)");
+  // REVERSED 2026-10-11: a player sees the die and the word, not a DC that is not theirs.
+  check("the button asks for the roll and names no DC",
+    /pillLabel: `Roll \$\{abilityLabel\} save`,/.test(save)
+    && !/Roll \$\{abilityLabel\} save \(DC \$\{f\.saveDC\}\)/.test(save), "Roll Wisdom save");
 }
 
 /* == THE D20 GLOW ====================================================== */

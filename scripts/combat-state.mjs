@@ -2848,10 +2848,11 @@ export class CombatState {
                   <strong style="color:#cfeacf;">Hexblade's Curse — Vengeance</strong>
                 </div>
                 <div style="color:#d8e8d8; font-size:12px;">
-                  <strong>${attName}</strong> regains <strong>${heal} HP</strong> (warlock level ${warlockLevel} + CHA mod ${chaMod >= 0 ? "+" : ""}${chaMod}).
+                  <strong>${attName}</strong> regains <strong>${heal} HP</strong><span class="ace-qol-bonus" data-bonus-actor="${attackerActor.id}"> (warlock level ${warlockLevel} + CHA mod ${chaMod >= 0 ? "+" : ""}${chaMod})</span>.
                 </div>
               </div>`,
               speaker: ChatMessage.getSpeaker({ actor: attackerActor }),
+              flags: { [MODULE_ID]: { type: "hexbladeVengeance", actorId: attackerActor.id } },
             });
           }
           console.log(`${MODULE_ID} | Hexblade's Curse heal-on-kill: ${attackerActor.name} +${heal} HP`);

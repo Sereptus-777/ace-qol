@@ -124,13 +124,16 @@ export class SaveResolver {
             <div style="font-size:15px;font-weight:700;color:${accent};text-transform:uppercase;letter-spacing:0.6px;border-bottom:1px solid #4a3a28;padding-bottom:6px;margin-bottom:8px;"><i class="fas fa-skull"></i> ${item.name.toUpperCase()}</div>
             <div style="font-size:14px;color:#e8d49a;">${body}</div>
           </div>`,
+          flags: { "ace-qol": { type: "powerWordKill", actorId: actor?.id ?? null } },
         });
       } catch (_) { /* non-fatal */ }
     };
 
     if (cur <= thr) {
       try { await tActor.update({ "system.attributes.hp.value": 0 }); } catch (err) { console.warn(`ace-qol | a update did not save:`, err); }
-      card(`${item.name} — ${tActor.name} slain`, `<strong>${tActor.name}</strong> has ${cur} HP (≤ ${thr}) and <strong>dies instantly</strong> — no save.`);
+      // Its hit points are the GM's (his rule, 2026-10-11): the table reads that it died.
+      card(`${item.name} — ${tActor.name} slain`, `<strong>${tActor.name}</strong> <strong>dies instantly</strong> — no save.`
+        + `<span class="ace-qol-gm-only"> (${cur} HP, at or under ${thr})</span>`);
       return;
     }
 
@@ -513,7 +516,10 @@ export class SaveResolver {
               <strong>${targetActor.name}</strong> ${verb} <em>${spellItem.name}</em>.
             </div>
             <div style="font-size:12px;color:#c0b288;">
-              Save: <strong>${total}</strong> vs DC <strong>${saveDC}</strong> (${saveAbility.toUpperCase()}) — <strong>${passed ? "SUCCESS" : "FAIL"}</strong>
+              ${saveAbility.toUpperCase()} save — <strong>${passed ? "SUCCESS" : "FAIL"}</strong>
+              ${/* the total is the roller's, the DC the caster's (his rule, 2026-10-11) */ ""}
+              <span class="ace-qol-bonus" data-bonus-actor="${targetActor?.id ?? ""}"> (rolled <strong>${total}</strong>)</span>
+              <span class="ace-qol-dc" data-dc-owner="${spellItem?.actor?.id ?? ""}"> vs DC <strong>${saveDC}</strong></span>
             </div>
           </div>
         `;
@@ -522,6 +528,7 @@ export class SaveResolver {
             speaker: ChatMessage.getSpeaker({ actor: targetActor }),
             content: html,
             type: CONST.CHAT_MESSAGE_STYLES?.OTHER ?? 0,
+            flags: { "ace-qol": { type: "endOfTurnSave", actorId: targetActor?.id ?? null } },
           });
         } catch (_) { /* non-fatal */ }
 

@@ -548,12 +548,13 @@ export class WeaponMasteries {
           </div>
           <div style="color:#e8e6e0; font-size:12px; line-height:1.45;">
             <strong>${attName}</strong> cleaves into <strong>${tgtName}</strong> for
-            <strong style="color:#ff9a4a;">${cleaveDamage}</strong> ${dmgTypeLabel} damage
-            (${origEntry.totalFinal} − ${subtractedMod} ${abilityKey.toUpperCase()} mod).
+            <strong style="color:#ff9a4a;">${cleaveDamage}</strong> ${dmgTypeLabel} damage<span class="ace-qol-bonus" data-bonus-actor="${attActor?.id ?? ""}">
+            (${origEntry.totalFinal} − ${subtractedMod} ${abilityKey.toUpperCase()} mod)</span>.
           </div>
         </div>`,
         speaker: ChatMessage.getSpeaker({ actor: attActor }),
-        flags: { [MODULE_ID]: { type: "cleaveFiredCard" } },
+        // The arithmetic is the attacker's (his rule, 2026-10-11).
+        flags: { [MODULE_ID]: { type: "cleaveFiredCard", actorId: attActor?.id ?? null } },
       });
     } catch (_) { /* non-fatal — damage already applied */ }
     return true;  // signal success to the click handler so it grays the button
@@ -1096,9 +1097,13 @@ export class WeaponMasteries {
     const dc = 8 + prof + Math.max(strMod, dexMod);
     const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "The target";
 
+    // ⚠️ THE DC IS THE ATTACKER'S (his rule, 2026-10-11: "Their own spell still
+    // shows their own formula and their own DC"), so it is wrapped before it goes
+    // into the sentence, and the sentence itself carries no bare number.
+    const dcHtml = `<span class="ace-qol-dc" data-dc-owner="${actor?.id ?? ""}">DC ${dc}</span>`;
     this._postMasteryCard("topple", item, actor, targetToken,
-      this._l10nFire("topple", { attacker: actor.name, target: tName, dc },
-        `${tName} must make a <span class="ace-qol-dc" data-dc-roller="${targetToken?.actor?.id ?? ""}"><strong>DC ${dc} </strong></span><strong>CON save</strong> or fall <strong>Prone</strong>.`)
+      this._l10nFire("topple", { attacker: actor.name, target: tName, dc: dcHtml },
+        `${tName} must make a <strong>${dcHtml} CON save</strong> or fall <strong>Prone</strong>.`)
     );
 
     // If the save engine is available, fire a public save card for this single target.
