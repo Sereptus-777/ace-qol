@@ -444,7 +444,7 @@ export class PresenceEngine {
     const line = (r) => `
       <label style="${ROW}">
         <input type="checkbox" name="who" value="${esc(r.doc.id)}" style="${BOX}" ${r.ally ? "" : "checked"} />
-        <img src="${esc(r.img ?? "icons/svg/mystery-man.svg")}" alt="" style="${IMG}" />
+        <img class="ace-face" src="${esc(r.img ?? "icons/svg/mystery-man.svg")}" alt="" style="${IMG}" />
         <span style="${NAME}">${esc(r.name)}${r.ally
           ? ` <span style="color:#8a8a92;font-weight:400;font-size:14px;">(its own side)</span>` : ""}</span>
         <span style="${FT}">${r.ft == null ? "" : `${r.ft} ft`}</span>

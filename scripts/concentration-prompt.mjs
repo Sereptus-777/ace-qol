@@ -406,7 +406,7 @@ export class ConcentrationPrompt {
         </div>
         <div style="display:flex;align-items:center;flex-wrap:wrap;gap:15px;padding:15px;">
           <div style="display:flex;flex-direction:column;align-items:center;gap:8px;flex-shrink:0;">
-            <img src="${esc(img)}" style="width:54px;height:54px;border-radius:8px;border:1px solid ${ACCENT};object-fit:cover;" />
+            <img class="ace-face" src="${esc(img)}" style="width:54px;height:54px;border-radius:8px;border:1px solid ${ACCENT};" />
             <button type="button" class="ace-qol-btn" data-action="aceQolConcPromptRoll" title="Roll Concentration"
                     style="background:none;border:none;cursor:pointer;padding:0;display:inline-flex;">
               ${aceD20FaceImg(20, { size: 46, glow: true })}

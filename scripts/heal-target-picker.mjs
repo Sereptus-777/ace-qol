@@ -6,11 +6,12 @@
 //   - HP bar (current/max) + temp HP badge
 //   - Distance-from-caster in feet (color-coded green/yellow/red vs range)
 //   - Self button (caster always selectable for self-eligible heals)
-//   - Out-of-range tokens are dimmed but selectable (GM may want to heal
-//     someone barely out of range — RAW says no, but houserules vary)
+//   - Only creatures in range (his rule, 2026-10-11: "Out of range comes off the
+//     list... HealTargetPicker does the same.")
 //   - Hostile tokens are dimmed when affects.type is "ally"
 //   - Multi-select with N-target cap (greys out additional clicks)
-//   - Already-targeted tokens (game.user.targets) come pre-selected
+//   - NOTHING arrives selected (his rule, 2026-10-11: "Cure Wounds asks, every
+//     time.")
 //
 // Why DialogV2: matches V13 conventions, integrates with Foundry's UI stack,
 // no jQuery dependency, supports promises cleanly.
@@ -43,20 +44,17 @@ export class HealTargetPicker {
     // Build the candidate list (every placeable token on canvas)
     const candidates = HealTargetPicker._buildCandidates(actor, casterToken, classification);
     if (!candidates.length) {
-      ui.notifications.warn(`${item.name}: no valid healing targets on this scene.`);
+      const range = Number(classification.rangeFt);
+      ui.notifications.warn(Number.isFinite(range)
+        ? `${item.name}: nobody within ${Math.round(range)} feet to heal.`
+        : `${item.name}: no valid healing targets on this scene.`);
       return [];
     }
 
-    // Pre-select tokens already in game.user.targets (GM convenience)
+    /* ⚠️🔴 NOTHING ARRIVES SELECTED (his rule, 2026-10-11: "HealTargetPicker does
+       the same. It stops lighting whoever was already targeted, and it stops
+       lighting the caster when nobody was. Cure Wounds asks, every time."). */
     const preSelected = new Set();
-    for (const t of game.user.targets) {
-      if (candidates.find(c => c.tokenId === t.id)) preSelected.add(t.id);
-    }
-    // For self-eligible heals, pre-select self if no other selection
-    if (preSelected.size === 0 && casterToken && classification.shape !== "multi") {
-      const selfRow = candidates.find(c => c.isSelf);
-      if (selfRow) preSelected.add(selfRow.tokenId);
-    }
 
     return await HealTargetPicker._showDialog({
       item, classification, candidates, preSelected, casterToken,
@@ -89,6 +87,8 @@ export class HealTargetPicker {
       // Distance in feet (0 for self) — nearest-edge, size-aware, 3D (canonical).
       let distFt = 0;
       if (!isSelf && casterToken) distFt = HealTargetPicker._measureDistance(casterToken, tok);
+      // A creature the heal cannot reach is not a row (his rule, 2026-10-11).
+      if (!isSelf && Number.isFinite(classification.rangeFt) && distFt > classification.rangeFt + 0.01) continue;
 
       // Validity checks
       const validity = HealTargetPicker._checkValidity(tok, casterActor, classification, distFt);
@@ -254,7 +254,7 @@ export class HealTargetPicker {
         ${headerHtml}
         <div class="ace-qol-heal-pickr-instructions">
           Select up to <strong>${maxCountDisplay}</strong> target${maxCountDisplay === 1 ? "" : "s"}.
-          Click a portrait to toggle. Out-of-range targets are dimmed.
+          Click a portrait to toggle.
         </div>
         <div class="ace-qol-heal-pickr-grid" data-max-count="${maxCountDisplay}">
           ${rowsHtml}
@@ -335,7 +335,7 @@ export class HealTargetPicker {
            data-token-id="${c.tokenId}" data-valid="${c.valid}"
            title="${foundry.utils.escapeHTML(c.reason || c.name)}">
         <div class="ace-qol-heal-pickr-tok-img-wrap">
-          <img src="${c.img}" alt="" class="ace-qol-heal-pickr-tok-img" onerror="this.style.display='none'">
+          <img src="${c.img}" alt="" class="ace-qol-heal-pickr-tok-img ace-face" onerror="this.style.display='none'">
           ${c.isSelf ? `<div class="ace-qol-heal-pickr-tok-self-badge">SELF</div>` : ""}
         </div>
         <div class="ace-qol-heal-pickr-tok-name">${foundry.utils.escapeHTML(c.name)}</div>

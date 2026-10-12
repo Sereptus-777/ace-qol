@@ -392,7 +392,7 @@ export class BloodiedEngine {
 
     const content = `
       <div class="ace-qol-bloodied-announce" style="display:flex;align-items:center;gap:8px;padding:4px 8px;border-left:3px solid #cc2222;background:rgba(204,34,34,0.08);border-radius:4px;">
-        <img src="${img}" alt="${name}" style="width:36px;height:36px;border-radius:50%;border:2px solid #cc2222;object-fit:cover;" />
+        <img class="ace-face" src="${img}" alt="${name}" style="width:36px;height:36px;border-radius:50%;border:2px solid #cc2222;" />
         <div style="flex:1;">
           <strong style="color:#cc2222;">${name}</strong>
           <span style="opacity:0.9;"> is <b style="color:#cc2222;">BLOODIED</b>!</span>

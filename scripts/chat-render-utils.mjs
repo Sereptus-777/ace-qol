@@ -244,6 +244,28 @@ export function bonusSpan(text, whose = null, extraClass = "") {
         + `${whose ? ` data-bonus-actor="${esc(whose)}"` : ""}>${text}</span>`;
 }
 
+/**
+ * A save's own named sum, " + 1 WIS = 7": the roller's to read.
+ *
+ * ⚠️🔴 A PARTY MEMBER'S OWN SAVE IS THE TABLE'S (His rule, 2026-10-12: "The GM card prints '6 + 1 = 7'. The +1 is not named.
+ * It has to say where it came from: 6 + 1 WIS = 7... The player card prints the
+ * die, the word FAIL... No formula and no total. This is his own save. He knows
+ * his own bonus, and the other players are allowed to see it... Name every bonus
+ * that way, on both cards, in capitals... One bare +1 is not an answer... A
+ * creature's bonus stays off the player card.")
+ *
+ * So it is not `ace-qol-bonus`, which is a d20's arithmetic and the GM's for
+ * everybody (an attack's included). This one belongs to the creature named on it:
+ * the one function (road/table-view.mjs, CHIP_CLASSES) keeps it on every copy of
+ * the card when that creature is a party member's and cuts it to the GM's when it
+ * is a creature's, and revealOwnBonuses shows it on the same test.
+ */
+export function saveBonusSpan(text, whose = null) {
+    const esc = (v) => String(v ?? "")
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    return `<span class="ace-qol-save-bonus"${whose ? ` data-bonus-actor="${esc(whose)}"` : ""}>${text}</span>`;
+}
+
 /** Reveal, on THIS screen, the bonuses this viewer is entitled to. */
 export function revealOwnBonuses(root, message = null) {
     try {
@@ -274,8 +296,18 @@ export function revealOwnBonuses(root, message = null) {
             if (mine) el.dataset.aceBonus = "show";
             else delete el.dataset.aceBonus;
         };
+        // ⚠️ A d20's arithmetic is the GM's, a party member's included (his rule,
+        // 2026-10-11: "A party member's save row is the die and PASS or FAIL...
+        // That is not the spell."). road/table-view.mjs cuts it from every
+        // player's copy; this only shows it on the GM's screen.
         for (const el of (root?.querySelectorAll?.(".ace-qol-bonus") ?? [])) {
-            decide(el, el.dataset?.bonusActor ?? null);
+            if (game.user?.isGM) el.dataset.aceBonus = "show";
+            else delete el.dataset.aceBonus;
+        }
+        // A save's own named sum: the GM's, and a party member's own on every
+        // screen (his rule, 2026-10-12: "Do not hide Virric's Wisdom from Virric").
+        for (const el of (root?.querySelectorAll?.(".ace-qol-save-bonus") ?? [])) {
+            decide(el, el.dataset?.bonusActor ?? ofCard);
         }
         for (const el of (root?.querySelectorAll?.(".ace-qol-mod-labeled") ?? [])) {
             /* Whose it is, in order: the chip itself, then the wrapper it sits in
@@ -426,7 +458,15 @@ function wantsAceSkin(message, el) {
         // ⚠️ TWO TESTS FOR THE REST CARD. The data model's type is dnd5e's own
         // answer, and the class is the one the template actually draws; a rename
         // in either place leaves the other still working.
-        if (type === "dnd5e.rest" || el?.querySelector?.(".rest-card")) return true;
+        // ⚠️🔴 AND BOTH WERE ASKED WRONG (his finding, 2026-10-11: "It stays
+        // parchment because the skin never lands."). dnd5e posts the message as
+        // type "rest" (PROVEN, dnd5e.mjs: `type: "rest"`), not "dnd5e.rest"; and
+        // the class is on the card element itself, which querySelector never
+        // matches because it only looks inside. Both are asked as they are now.
+        const restType = type === "rest" || type === "dnd5e.rest";
+        const restClass = !!(el?.classList?.contains?.("rest-card") || el?.matches?.(".rest-card")
+            || el?.querySelector?.(".rest-card"));
+        if (restType || restClass) return true;
         if (message?.flags?.core?.initiativeRoll === true
             || message?.getFlag?.("core", "initiativeRoll") === true) return true;
         // "any of the dice that I roll off of (the dice that are underneath the
@@ -492,11 +532,88 @@ export function revealGmHalf(root) {
             el.setAttribute("data-ace-gm", "true");
             shown++;
         }
+        // The other way round: what is written for the table in words (an
+        // attack's sentence) steps aside on the GM's screen, whose card keeps the
+        // math (his rule, 2026-10-11).
+        for (const el of (root?.querySelectorAll?.(".ace-qol-table-only") ?? [])) {
+            el.setAttribute("data-ace-gm", "true");
+        }
     } catch (err) {
         console.warn(`${MODULE_ID} | could not reveal the GM half of a card, so it stays hidden `
             + `on this screen:`, err);
     }
     return { shown };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   A CARD NEVER SHOWS A PICTURE THAT IS NOT THERE
+
+     His rule, 2026-10-12: *"A card never shows an image whose file is not
+     there. The header uses Charm Person's own icon, a file that exists. A
+     missing portrait is left out and the missing path is said in the console.
+     The cast is not stopped and nothing asks him."*
+
+   The Lamia's portrait points at "Lamia 03.png", which the server answers with
+   a 404, so every Charm Person card she cast drew a broken picture in its header
+   and asked for the file again on every redraw. One pass, here, for every ACE
+   card on every screen: a picture that fails is swapped for the fallback its
+   card named (`data-ace-fallback`), or else taken off the card. The path is said
+   once per session, and a path already known to be missing is taken off before
+   it is asked for again.
+
+   ⚠️ A PICTURE WITH ITS OWN onerror IS LEFT TO IT. The d20 face (dice-face.mjs)
+   already swaps itself for an icon; taking it away first would lose that.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** Picture paths this screen has found missing, this session. */
+const _missingImages = new Set();
+
+function _pictureMissing(img, src, cardWhat) {
+    try {
+        if (!_missingImages.has(src)) {
+            _missingImages.add(src);
+            let shown = src;
+            try { shown = decodeURI(src); } catch (_) { /* shown as it is */ }
+            console.warn(`${MODULE_ID} | the picture "${shown}" is not there (the server has no such `
+                + `file), so it is left off ${cardWhat}. Nothing else changes.`);
+        }
+        const fallback = img.getAttribute("data-ace-fallback");
+        img.removeAttribute("data-ace-fallback");
+        if (fallback && fallback !== src && !_missingImages.has(fallback)) {
+            console.log(`${MODULE_ID} | ${cardWhat} shows its fallback picture instead: "${fallback}".`);
+            img.addEventListener("error", () => _pictureMissing(img, fallback, cardWhat), { once: true });
+            img.setAttribute("src", fallback);
+            return;
+        }
+        img.remove();
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not take a missing picture off ${cardWhat}:`, err);
+    }
+}
+
+/** Swap or remove every picture on this card whose file is not there. */
+export function guardCardImages(message, el) {
+    try {
+        if (!el?.querySelectorAll) return 0;
+        if (!isAceCard(message, el) && el.getAttribute?.(ACE_SKIN) !== "1") return 0;
+        const cardWhat = `the card ${message?.id ?? ""}`.trim();
+        let known = 0;
+        for (const img of el.querySelectorAll("img")) {
+            if (img.dataset.aceImgGuard === "1" || img.hasAttribute("onerror")) continue;
+            const src = img.getAttribute("src") ?? "";
+            if (!src || src.startsWith("data:")) continue;
+            img.dataset.aceImgGuard = "1";
+            if (_missingImages.has(src)) { _pictureMissing(img, src, cardWhat); known++; continue; }
+            img.addEventListener("error", () => _pictureMissing(img, src, cardWhat), { once: true });
+            // A picture that already failed before anybody was listening.
+            if (img.complete && img.naturalWidth === 0 && img.currentSrc) _pictureMissing(img, src, cardWhat);
+        }
+        return known;
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not check the pictures on a card, so a missing one may `
+            + `show as broken:`, err);
+        return 0;
+    }
 }
 
 export function registerAceChrome() {
@@ -506,6 +623,7 @@ export function registerAceChrome() {
         fillRendered(message, el);
         stampAceCard(message, el);
         skinSystemCard(message, el);   // after the stamp: an ACE card is never skinned
+        guardCardImages(message, el);
         revealOwnDCs(el);
         revealOwnACs(el);
         revealOwnBonuses(el, message);
@@ -974,6 +1092,44 @@ export function registerScrollAtTheEnd() {
    one function (road/table-view.mjs) cuts every AC from every player's copy
    before the card is sent; this only shows it on the GM's screen.
    ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * What the table reads of an attack: the die, and what it did, in words.
+ *
+ * His rule, 2026-10-11, from the live test: "Fist shows a die reading 18 and
+ * HIT, so the table reads it as a total and says 18 cannot hit. The die stays.
+ * Beside it, in the left three quarters, the words are 'Rolled an 18 and hit.'
+ * HIT, MISS, or CRIT stays on the right, same word as the sentence. 18 is the
+ * die. It is not the total, and the total is not added to that side. My card
+ * stays the math."
+ *
+ * So it is marked `.ace-qol-table-only`: on every screen but the GM's. The GM's
+ * card keeps the die, the bonus, the total and the AC, and no sentence.
+ *
+ * ⚠️ THE YELLOW NUMBER MOVES INTO THE SENTENCE (his rule, the same afternoon:
+ * "Switch the 13s. The yellow 13 beside the die moves into the sentence and
+ * keeps its size and its yellow. The 13 beside the die is deleted. Do not
+ * shrink it to the size of the words."). It keeps the die number's own class.
+ *
+ * @param {number} d20       the face the attack used
+ * @param {object[]} results the attack's rows, each with its hitResult
+ */
+export function attackSentenceHtml(d20, results) {
+    const face = Number(d20);
+    if (!Number.isFinite(face)) return "";
+    // The row's own word, said as a verb: HIT, MISS, CRIT!, FUMBLE.
+    const said = (r) => r?.hitResult === "critical" ? "crit"
+        : r?.hitResult === "hit" ? "hit"
+        : r?.hitResult === "fumble" ? "fumbled"
+        : "missed";
+    const words = new Set((results ?? []).map(said));
+    const article = [8, 11, 18].includes(face) ? "an" : "a";
+    // One roll against targets that came out differently names no word: each
+    // row's own word says it.
+    const tail = words.size === 1 ? ` and ${[...words][0]}` : "";
+    return `<span class="ace-qol-atk-table-line ace-qol-table-only">Rolled ${article} `
+        + `<span class="ace-qol-atk-d20-result">${face}</span>${tail}.</span>`;
+}
 
 /** The wrapper every card puts an AC in. `whose` is the creature it belongs to. */
 export function acSpan(text, whose = null, extraClass = "") {

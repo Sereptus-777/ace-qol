@@ -32,7 +32,13 @@ const check = (label, ok, detail = "") => {
   console.log(`  ${ok ? "ok  " : "FAIL"} ${String(label).padEnd(66)} ${detail}`);
 };
 
-/** A chat message element, as far as the chrome pass can tell. */
+/**
+ * A chat message element, as far as the chrome pass can tell.
+ * ⚠️ LIKE THE DOM, NOT KINDER (his finding, 2026-10-11: "The test stays green
+ * because its fake element pretends the class is inside."). querySelector looks
+ * only INSIDE the element, never at the element itself; the element's own
+ * classes answer classList.contains and matches, as a real one does.
+ */
 const el = (inside = "", attrs = {}, classes = []) => {
   const set = new Set(classes);
   return {
@@ -41,23 +47,33 @@ const el = (inside = "", attrs = {}, classes = []) => {
       add: (...c) => c.forEach((x) => set.add(x)),
       remove: (...c) => c.forEach((x) => set.delete(x)),
       has: (c) => set.has(c),
+      contains: (c) => set.has(c),
       all: () => [...set],
     },
     setAttribute(k, v) { this._attrs[k] = v; },
     getAttribute(k) { return this._attrs[k] ?? null; },
-    querySelector(sel) { return this._inside.includes(sel.replace(".", "")) ? {} : null; },
+    matches(sel) { return sel.startsWith(".") && set.has(sel.slice(1)); },
+    querySelector(sel) { return this._inside.split(/\s+/).includes(sel.replace(".", "")) ? {} : null; },
   };
 };
 const skinned = (e) => e.getAttribute("data-ace-skin") === "1";
 
 console.log("\nTHE FOUR HE NAMED");
 {
-  const rest = el("rest-card", {}, ["chat-message", "dnd5e2"]);
-  check("a long rest card is dressed", skinSystemCard({ type: "dnd5e.rest" }, rest) && skinned(rest));
+  // dnd5e posts a rest as type "rest" (dnd5e.mjs: `type: "rest"`), the same
+  // message for a PC and an NPC. Nothing inside it is asked for here.
+  const rest = el("", {}, ["chat-message", "dnd5e2"]);
+  check("a long rest card is dressed by its type, \"rest\", alone",
+    skinSystemCard({ type: "rest" }, rest) && skinned(rest));
 
-  const shortRest = el("rest-card");
-  check("and so is a short rest, by the class the template draws",
+  // And the class sits on the card element itself, not inside it.
+  const shortRest = el("", {}, ["chat-message", "rest-card"]);
+  check("and by the rest-card class on the element itself, alone",
     skinSystemCard({ type: "" }, shortRest) && skinned(shortRest));
+
+  const inner = el("rest-card");
+  check("and still by the class drawn inside it",
+    skinSystemCard({ type: "" }, inner) && skinned(inner));
 
   const init = el("dice-roll");
   check("an initiative roll is dressed",
@@ -103,6 +119,12 @@ console.log("\nTHE DRESSING ITSELF");
 {
   check("the background is ACE's black, through Foundry's own variable",
     /\[data-ace-skin="1"\][^}]*--chat-message-background: #0e0e10;/s.test(css));
+  // "Paint the background itself, black" (his rule, 2026-10-11): a parchment
+  // image painted as a background ignores the variable.
+  check("and painted on the background itself, which an image cannot ignore",
+    /\.chat-message\[data-ace-skin="1"\] \{[^}]*background: #0e0e10 !important;/s.test(css));
+  check("and dnd5e's own card inside shows it",
+    /\[data-ace-skin="1"\] \.chat-card,\s*\.chat-message\[data-ace-skin="1"\] \.rest-card \{\s*background: none !important;/s.test(css));
   check("the frame is 1px, his words",
     /\[data-ace-skin="1"\][^}]*border-width: 1px;/s.test(css));
   /* ⚠️ `.chat-message` hardcodes `color: var(--color-dark-1)`, which no theme

@@ -46,6 +46,7 @@ import { InitiativeTools } from "./initiative-tools.mjs";
 import { popupDing } from "./popup-ding.mjs";
 import { awaitDiceSettle } from "./dsn-utils.mjs";
 import { aceToolOrder } from "./token-tools-order.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 
 /** Footsteps carry this far, edge to edge: the same measure the auras use. */
 const HEARING_FT = 30;
@@ -123,6 +124,17 @@ export class PerceptionWatch {
      restrained-movement.mjs reads the hold off the actor instead of a local. */
   static LOCK_FLAG = "perceptionLock";
 
+  /* ⚠️🔴 ONE JOIN PASS AT A TIME (his table, 2026-10-12). Every token move and
+     every door during a fight starts a pass, and a pass waits seconds on the
+     initiative dice of each creature it adds. A second move inside that wait
+     started a second pass that read the tracker as it was before the first one
+     had finished, so the same creature could be added and rolled again. A pass
+     that arrives while one is running is remembered and run once, after. */
+  static _joining = null;
+  static _joinAgain = null;
+  /** Tokens whose initiative is being rolled right now, by any path. */
+  static _rolling = new Set();
+
   static init() {
     /* ⚠️ THE DESTINATION, NOT THE SQUARE HE LEFT (his rule). The secret-door
        watcher read `document.x` and tested the square he had already walked out
@@ -199,6 +211,8 @@ export class PerceptionWatch {
         PerceptionWatch._unlock(scene).catch(() => {});
       }
     }
+
+    registerChatCardHandler((message, html) => PerceptionWatch.wireJoinLines(message, html), "join lines");
 
     console.log(`${LOG} | watching for the moment something notices somebody.`);
   }
@@ -636,12 +650,12 @@ export class PerceptionWatch {
     const content = `
       <div class="ace-perceived">
         <div class="ace-perceived-who">
-          ${foeDoc.actor?.img ? `<img class="ace-perceived-face" src="${esc(foeDoc.actor.img)}" alt="" />` : ""}
+          ${foeDoc.actor?.img ? `<img class="ace-perceived-face ace-face" src="${esc(foeDoc.actor.img)}" alt="" />` : ""}
           <div>
             <div class="ace-perceived-line">${esc(line)}</div>
             <div class="ace-perceived-sub">${subtitle}</div>
           </div>
-          ${pcDoc.actor?.img ? `<img class="ace-perceived-face" src="${esc(pcDoc.actor.img)}" alt="" />` : ""}
+          ${pcDoc.actor?.img ? `<img class="ace-perceived-face ace-face" src="${esc(pcDoc.actor.img)}" alt="" />` : ""}
         </div>
         ${alsoHtml}
         <p class="ace-perceived-why">${esc(why)}</p>
@@ -758,6 +772,21 @@ export class PerceptionWatch {
    */
   static async _addAndRoll(combat, tokenDoc) {
     if (!combat || !tokenDoc) return null;
+    // A creature already being rolled for is not rolled for twice (one token,
+    // one join, until the fight ends).
+    if (PerceptionWatch._rolling.has(tokenDoc.id)) {
+      console.log(`${LOG} | ${tokenDoc.name} is already being added to the fight, so it is not added again.`);
+      return null;
+    }
+    PerceptionWatch._rolling.add(tokenDoc.id);
+    try {
+      return await PerceptionWatch._addAndRollOnce(combat, tokenDoc);
+    } finally {
+      PerceptionWatch._rolling.delete(tokenDoc.id);
+    }
+  }
+
+  static async _addAndRollOnce(combat, tokenDoc) {
     let combatant = combat.combatants.find(c => c.tokenId === tokenDoc.id);
     if (!combatant) {
       try {
@@ -801,27 +830,98 @@ export class PerceptionWatch {
   /* ═══ Once the fight is on ══════════════════════════════════════════ */
 
   /**
-   * A hostile that can see somebody already fighting joins the fight.
+   * A hostile that can see somebody it is fighting joins the fight.
    *
    * His rule, 2026-10-05: "Once combat is started, do not popup. A hostile that
    * is not yet in the combat, and can itself see a token already in the combat,
    * is added and rollInitiative() is called on that one combatant. No hop. No
    * player chat. One GM chat line naming the creature."
    *
+   * ⚠️🔴 THE TOKEN IT SEES IS ON THE OTHER SIDE (his table, 2026-10-12: "three
+   * [Nothics] that are in a separate room, completely 200 feet away from where I
+   * was casting... behind doors and walls... joined the fight"). PROVEN from his
+   * scene, AMBER TEMPLE: LOWER: none of the four Nothics, four Flameskulls or two
+   * Gorgons that joined had a clear line to a single creature on his side; each
+   * could see only other monsters that had already joined. A hostile counted as
+   * "a token already in the combat", so one monster that joined pulled in every
+   * monster that could see it, and the next room the same way: the chain the
+   * popup's one-hop rule (`_group`) was written to stop. The tokens a creature
+   * has to see are the ones it would be fighting: a player's, or one that is not
+   * hostile.
+   *
    * ⚠️ HEARING ROLLS NOTHING. The sound test is not asked on this path at all:
    * a creature that hears the fight through a wall is not in it.
    */
-  static async _joinFight(scene, { at = null, moved = null } = {}) {
+  static _joinFight(scene, opts = {}) {
+    if (PerceptionWatch._joining) {
+      PerceptionWatch._joinAgain = { scene, opts };
+      return PerceptionWatch._joining;
+    }
+    PerceptionWatch._joining = (async () => {
+      try {
+        await PerceptionWatch._joinPass(scene, opts);
+      } catch (err) {
+        console.warn(`${LOG} | a join pass failed part way, so some creatures may not have been tested:`, err);
+      } finally {
+        PerceptionWatch._joining = null;
+      }
+      const next = PerceptionWatch._joinAgain;
+      PerceptionWatch._joinAgain = null;
+      if (next) await PerceptionWatch._joinFight(next.scene, next.opts);
+    })();
+    return PerceptionWatch._joining;
+  }
+
+  /** A token a hostile creature would be fighting: a player's, or one that is not hostile. */
+  static _onTheOtherSide(tokenDoc) {
+    if (!tokenDoc?.actor) return false;
+    if (tokenDoc.actor.hasPlayerOwner) return true;
+    const D = CONST.TOKEN_DISPOSITIONS ?? {};
+    const d = Number(tokenDoc.disposition);
+    return d === (D.FRIENDLY ?? 1) || d === (D.NEUTRAL ?? 0);
+  }
+
+  /**
+   * A name the GM can tell apart from its twins: "Flameskull (2 of 4)", counted
+   * across the scene from the top of the map down, then left to right.
+   */
+  static _nameOnScene(tokenDoc) {
+    const name = String(tokenDoc?.name ?? "a creature");
+    try {
+      const twins = (tokenDoc?.parent?.tokens?.contents ?? []).filter(t => t.name === tokenDoc.name)
+        .sort((a, b) => (a.y - b.y) || (a.x - b.x));
+      if (twins.length < 2) return name;
+      return `${name} (${twins.findIndex(t => t.id === tokenDoc.id) + 1} of ${twins.length})`;
+    } catch (_) {
+      return name;
+    }
+  }
+
+  /** The name as a link that selects and finds that one token. */
+  static _tokenLink(tokenDoc) {
+    const esc = (x) => foundry.utils.escapeHTML(String(x ?? ""));
+    return `<a class="ace-perceived-token" data-token-doc-id="${esc(tokenDoc.id)}" `
+      + `data-scene-id="${esc(tokenDoc.parent?.id ?? "")}" title="Find this one on the map">`
+      + `${esc(PerceptionWatch._nameOnScene(tokenDoc))}</a>`;
+  }
+
+  static async _joinPass(scene, { at = null, moved = null } = {}) {
     const combat = game.combat;
     if (!scene || !combat?.started) return;
 
-    const inFight = new Set(combat.combatants.map(c => c.tokenId).filter(Boolean));
-    const seats = combat.combatants.map(c => c.token).filter(Boolean);
-    if (!seats.length) return;
+    // Who it would be fighting: the player tokens and anybody not hostile.
+    const seats = combat.combatants.map(c => c.token).filter(Boolean)
+      .filter(t => PerceptionWatch._onTheOtherSide(t));
+    if (!seats.length) {
+      console.log(`${LOG} | the fight has nobody on the players' side in it yet, so no creature is `
+        + `tested for joining.`);
+      return;
+    }
 
     const { foes } = PerceptionWatch._sides(scene);
     for (const foe of foes) {
-      if (inFight.has(foe.id)) continue;
+      // Read the tracker as it is NOW, not as it was when the pass began.
+      if (combat.combatants.some(c => c.tokenId === foe.id)) continue;
       /* ⚠️ SKIP THE DOWN AND THE HIDDEN (his rule). `_sides` already drops the
          dead, the unconscious and the incapacitated; a token the players cannot
          see is the GM's ambush and is not dragged into the tracker by a walk. */
@@ -841,9 +941,37 @@ export class PerceptionWatch {
 
       const said = await PerceptionWatch._addAndRoll(combat, foe);
       if (!said) continue;
-      console.log(`${LOG} | the fight is on: ${said}, because it can see ${sawWho.name}.`);
-      await PerceptionWatch._gmLine(`<strong>${foundry.utils.escapeHTML(foe.name)}</strong> `
-        + `joins the fight: it can see ${foundry.utils.escapeHTML(sawWho.name)}. ${said}.`);
+      const init = combat.combatants.find(c => c.tokenId === foe.id)?.initiative;
+      console.log(`${LOG} | the fight is on: ${PerceptionWatch._nameOnScene(foe)} on ${init ?? "?"}, `
+        + `because it can see ${sawWho.name}.`);
+      await PerceptionWatch._gmLine(`<strong>${PerceptionWatch._tokenLink(foe)}</strong> joins the fight`
+        + `${Number.isFinite(Number(init)) ? ` on ${foundry.utils.escapeHTML(String(init))}` : ""}: `
+        + `it can see ${PerceptionWatch._tokenLink(sawWho)}.`);
+    }
+  }
+
+  /** The join line's names: a click selects that one token and pans to it. */
+  static wireJoinLines(message, html) {
+    try {
+      if (message?.flags?.[MODULE_ID]?.type !== "perceptionJoined") return;
+      const el = html?.[0] ?? html;
+      for (const a of (el?.querySelectorAll?.(".ace-perceived-token") ?? [])) {
+        if (a.dataset.wired) continue;
+        a.dataset.wired = "1";
+        a.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const scene = game.scenes?.get(a.dataset.sceneId) ?? canvas?.scene;
+          const token = scene?.id === canvas?.scene?.id ? scene.tokens.get(a.dataset.tokenDocId)?.object : null;
+          if (!token) {
+            ui.notifications?.info("That creature is on another scene.");
+            return;
+          }
+          token.control({ releaseOthers: true });
+          canvas.animatePan({ x: token.center.x, y: token.center.y, duration: 250 });
+        });
+      }
+    } catch (err) {
+      console.warn(`${LOG} | could not wire the names on a join line:`, err);
     }
   }
 

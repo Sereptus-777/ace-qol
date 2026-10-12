@@ -21,6 +21,7 @@ import { QolSettings } from "./settings.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
 // The One Road: every card here goes through the card door (Phase 3).
 import { CardDoor } from "./road/doors.mjs";
+import { attackSentenceHtml } from "./chat-render-utils.mjs";
 
 export class MergeCard {
 
@@ -180,7 +181,7 @@ export class MergeCard {
 
       return `
         <div class="ace-qol-merge-target-row ${hitClass}">
-          <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-merge-tgt-img" />
+          <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-merge-tgt-img ace-face" />
           <span class="ace-qol-merge-tgt-name">${r.name ?? "Unknown"}</span>
           <span class="ace-qol-merge-tgt-ac ace-qol-ac" data-ac-actor="${r.targetActor?.id ?? ""}">AC ${r.ac}</span>
           <span class="ace-qol-merge-tgt-result">${hitLabel}</span>
@@ -256,7 +257,8 @@ export class MergeCard {
         <img class="ace-qol-atk-d20-img" src="${bd20Path}" alt="d20"
              onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">
         <i class="fas fa-dice-d20 ace-qol-atk-d20-fallback" style="display:none"></i>
-        <span class="ace-qol-atk-d20-result">${d20}</span>
+        ${/* the number beside the die is the GM's; the table reads it in the sentence (his rule, 2026-10-11) */ ""}
+        <span class="ace-qol-atk-d20-result ace-qol-gm-only">${d20}</span>
       </span>
     `;
 
@@ -283,7 +285,7 @@ export class MergeCard {
     return `
       <div class="ace-qol-merge-attack">
         <div class="ace-qol-atk-roll">
-          <span class="ace-qol-atk-formula">${d20Html}</span>
+          <span class="ace-qol-atk-formula">${d20Html}${attackSentenceHtml(d20, attackData.results)}</span>
           <span class="ace-qol-bonus"${id}>${showChips ? `<span class="ace-qol-atk-formula">${formulaHtml}</span>` : ""}<span class="ace-qol-atk-total ${resultClass}">${total}</span></span>
         </div>
       </div>
@@ -426,7 +428,7 @@ export class MergeCard {
                    rule, 2026-10-01, extended to this card the same day). The old
                    class stays because it is the handle the applier wires the
                    click to; the save card's class decides the box. -->
-              ${atkResult.img ? `<img src="${atkResult.img}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait" />` : ""}
+              ${atkResult.img ? `<img src="${atkResult.img}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait ace-face" />` : ""}
               <span class="ace-qol-dmg-tgt-name">${atkResult.name ?? "Unknown"}</span>
               <span class="ace-qol-atk-ac ace-qol-ac" data-ac-actor="${atkResult.targetActor?.id ?? ""}">AC ${atkResult.ac}</span>
               <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
@@ -443,7 +445,7 @@ export class MergeCard {
         return `
           <div class="ace-qol-merge-combined-row">
             <div class="ace-qol-merge-row-header">
-              ${atkResult.img ? `<img src="${atkResult.img}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait" />` : ""}
+              ${atkResult.img ? `<img src="${atkResult.img}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait ace-face" />` : ""}
               <span class="ace-qol-dmg-tgt-name">${atkResult.name ?? "Unknown"}</span>
               <span class="ace-qol-atk-ac ace-qol-ac" data-ac-actor="${atkResult.targetActor?.id ?? ""}">AC ${atkResult.ac}</span>
               <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
@@ -494,7 +496,7 @@ export class MergeCard {
       return `
         <div class="ace-qol-dmg-target-row ace-qol-merge-combined-row" data-token-doc-id="${tokenDocId}" data-actor-id="${dr.targetActor?.id ?? ""}" data-scene-id="${canvas.scene?.id ?? ""}">
           <div class="ace-qol-merge-row-header">
-            ${portrait ? `<img src="${portrait}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait" />` : ""}
+            ${portrait ? `<img src="${portrait}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait ace-face" />` : ""}
             <span class="ace-qol-dmg-tgt-name">${atkResult.name ?? "Unknown"}</span>
             <span class="ace-qol-atk-ac ace-qol-ac" data-ac-actor="${atkResult.targetActor?.id ?? ""}">AC ${atkResult.ac}</span>
             <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>

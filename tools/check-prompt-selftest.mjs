@@ -523,9 +523,9 @@ console.log("");
   // check-gate "prints '+5 Constitution' in the line and again in the subtitle,
   // and the self-test locks that leaking sentence in. Change the test to expect
   // the bonus hidden."). Above: what the GM reads. Here: what the table is sent,
-  // through the one function that decides it. And the same morning: "A player
-  // character's formula and DC are not a secret. The whole table sees them. A
-  // creature's bonus, DC, AC, and hit points stay on my screen only."
+  // through the one function that decides it. A check is a d20, and a d20's
+  // arithmetic is the GM's whoever rolled it (his rule, the live test the same
+  // day: "A party member's save row is the die and PASS or FAIL").
   const { splitHtml } = await import("../scripts/road/table-view.mjs");
   const read = CheckGate.read(aryel, "concentration", "con");
   const html = CheckGate._breakdownHtml(CheckGate._breakdown(aryel, read, 6, 11), "aryel");
@@ -533,8 +533,8 @@ console.log("");
   check("the whole sentence is Aryel's: when no player owns her it is cut, and it is the GM's",
     sent.slots.map(sl => sl.aud), ["gm"]);
   const party = splitHtml(html, { makeId: () => "x", isTable: (id) => id === "aryel" });
-  check("when a player owns her, the whole table reads it",
-    party.slots.length === 0 && /\+5/.test(party.html), true);
+  check("and when a player owns her, it is still the GM's",
+    party.slots.length === 1 && !/\+5/.test(party.html), true);
   check("the table is sent no bonus and no total",
     /\+5|Constitution|11/.test(sent.html), false);
   const nobody = splitHtml(CheckGate._breakdownHtml(CheckGate._breakdown(aryel, read, 6, 11)), { makeId: () => "y" });

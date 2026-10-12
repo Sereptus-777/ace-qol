@@ -1470,7 +1470,7 @@ export class ReactionEngine {
       // ⚠️ THE SCREEN THAT SAYS YES SPENDS THE LUCK POINT (2026-09-18). A
       // player's screen asking about an NPC's Lucky cannot write that NPC's
       // feat; the GM who just said yes can, and a player saying yes owns theirs.
-      if (result?.accepted && payload.promptData?.luckItemUuid) {
+      if (result?.accepted && payload.promptData?.luckItemUuid && !result.choiceData?.luckSpent) {
         try {
           const { spendLuckByUuid } = await import("./luck.mjs");
           const luckSpent = await spendLuckByUuid(payload.promptData.luckItemUuid);
@@ -4271,7 +4271,7 @@ export class ReactionEngine {
       // happening. The numbers belong on the chat card after the choice. It
       // replaces the old attacker row and the description underneath it.
       const scenePortrait = (img, name, side) => img
-        ? `<img src="${img}" class="ace-qol-reaction-scene-portrait ${side}" alt="${esc(name)}" />`
+        ? `<img src="${img}" class="ace-qol-reaction-scene-portrait ${side} ace-face" alt="${esc(name)}" />`
         : `<span class="ace-qol-reaction-scene-portrait ${side} ace-qol-reaction-scene-initial">${esc(String(name ?? "?").charAt(0))}</span>`;
       const sceneHtml = attackerName ? `
         <div class="ace-qol-reaction-scene" style="border-color:${accent}; --ace-accent:${accent}">
@@ -4349,7 +4349,7 @@ export class ReactionEngine {
             <span class="ace-qol-reaction-heading" style="color:${accent}">${iconsHtml} ${heading ?? title}</span>
           </div>` : `
           <div class="ace-qol-reaction-header" style="border-color:${accent}">
-            ${reactorActorImg ? `<img src="${reactorActorImg}" class="ace-qol-reaction-portrait" />` : ""}
+            ${reactorActorImg ? `<img src="${reactorActorImg}" class="ace-qol-reaction-portrait ace-face" />` : ""}
             <div class="ace-qol-reaction-header-text">
               <span class="ace-qol-reaction-actor-name">${reactorActorName ?? "Unknown"}</span>
               <span class="ace-qol-reaction-type-label" style="color:${accent}">${iconsHtml} ${heading ?? title}</span>
@@ -4384,10 +4384,13 @@ export class ReactionEngine {
           face: reactorActorImg,
           name: reactorActorName,
           onShown: data.onShown,
-          answer: (accepted) => {
+          // One box for one roll (2026-10-12): it spends, rolls and asks which die.
+          luckRoll: data.luckRoll ?? null,
+          luckItemUuid: data.luckItemUuid ?? null,
+          answer: (accepted, choiceData = {}) => {
             if (resolved) return;
             resolved = true;
-            resolve({ accepted, choiceData: {} });
+            resolve({ accepted, choiceData });
           },
         }).catch(err => {
           // ⚠️ NOTHING WAITS FOREVER. The roll is holding on this promise.
@@ -4547,7 +4550,7 @@ export class ReactionEngine {
    * waiting for a click that is never coming.
    */
   static async _offerLuckyPopup({ title, description, gmNote, acceptLabel, declineLabel,
-                                  face, name, onShown, answer }) {
+                                  face, name, onShown, answer, luckRoll = null, luckItemUuid = null }) {
     const esc = (x) => foundry.utils.escapeHTML(String(x ?? ""));
     const amGM = game.user?.isGM === true;
 
@@ -4556,7 +4559,7 @@ export class ReactionEngine {
     const content = `
       <div class="ace-lucky${amGM ? " is-gm" : ""}">
         <div class="ace-lucky-who">
-          ${face ? `<img class="ace-lucky-face" src="${esc(face)}">` : ""}
+          ${face ? `<img class="ace-lucky-face ace-face" src="${esc(face)}">` : ""}
           <div>
             <div class="ace-lucky-name">${esc(String(name ?? "Unknown").toUpperCase())}</div>
             <div class="ace-lucky-tag">${ReactionEngine.LUCKY_CLOVER} Lucky</div>
@@ -4567,11 +4570,15 @@ export class ReactionEngine {
       </div>`;
 
     let done = false;
-    const settle = (accepted) => {
+    const settle = (accepted, choiceData = {}) => {
       if (done) return;
       done = true;
-      answer(accepted);
+      answer(accepted, choiceData);
     };
+    // What closing the window answers, which changes once the point is spent:
+    // before, "keep the roll"; after, the point is spent and the roll kept as it
+    // was ("Closing a box is not a second offer").
+    let onClose = () => settle(false);
 
     try {
       const dlg = new foundry.applications.api.DialogV2({
@@ -4602,9 +4609,19 @@ export class ReactionEngine {
         // ⚠️ DISMISSAL MUST ANSWER, OR THE ROLL WAITS FOREVER. The same fault
         // the pickers each had to learn: a window closed with Escape fires no
         // button callback at all.
-        close: () => settle(false),
+        close: () => onClose(),
       });
       await dlg.render({ force: true });
+
+      /* ⚠️🔴 ONE BOX FOR ONE ROLL (his rule, 2026-10-12: "Spending the point rolls
+         the second die in that same box and he picks which die to keep there. The
+         old dialog in reaction-engine does not open."). With a roll to make, the
+         spend button does not close the window: the click is taken before the
+         dialog's own handler, the point is spent on this screen, the luck die is
+         thrown where everybody sees it, and the two buttons become the dice to
+         choose from, the better one green and the worse one red. */
+      if (luckRoll) ReactionEngine._luckRollInTheBox(dlg, { luckRoll, luckItemUuid, settle,
+        setOnClose: (fn) => { onClose = fn; } });
 
       /* ⚠️ THE CLOVER GOES ON THE SPEND BUTTON (his rule, 2026-10-05: "the same
          svg as the header... Keep the roll stays plain"). It is put in after the
@@ -4635,6 +4652,124 @@ export class ReactionEngine {
       try { ui.notifications?.warn("ACE: the Lucky offer could not open; the roll stands."); } catch (_) {}
       settle(false);
     }
+  }
+
+  /**
+   * The second half of the one Lucky box: spend, roll the luck die, pick a die.
+   * @private
+   */
+  static _luckRollInTheBox(dlg, { luckRoll, luckItemUuid, settle, setOnClose }) {
+    const root = dlg.element;
+    if (!root) return;
+    const esc = (x) => foundry.utils.escapeHTML(String(x ?? ""));
+    let stage = "ask";
+    let fresh = null;
+
+    const close = () => { try { dlg.close(); } catch (_) { /* already closed */ } };
+
+    const showPick = (choices) => {
+      stage = "pick";
+      const ask = root.querySelector(".ace-lucky-ask");
+      if (ask) ask.textContent = String(luckRoll.ask ?? "Your luck die shows {fresh}. Which d20?")
+        .replace("{fresh}", String(fresh));
+      const gm = root.querySelector(".ace-lucky-gm");
+      if (gm) gm.remove();
+      const footer = root.querySelector(".form-footer, .dialog-buttons, footer");
+      const proto = root.querySelector('button[data-action="spend"]');
+      if (!footer || !proto) throw new Error("the box has no buttons to turn into dice");
+      const amGM = game.user?.isGM === true;
+      for (const b of [...footer.querySelectorAll("button")]) b.remove();
+      for (const c of choices) {
+        const tone = ReactionEngine.CHOICE_TONES[c.tone] ?? ReactionEngine.CHOICE_TONES.even;
+        const b = proto.cloneNode(false);
+        b.setAttribute("data-action", "pick");
+        b.setAttribute("data-choice", c.id);
+        b.setAttribute("data-tone", c.tone ?? "even");
+        b.setAttribute("type", "button");
+        b.style.setProperty("background", tone.face, "important");
+        const sub = amGM ? (c.gmSub ?? c.sub) : c.sub;
+        b.innerHTML = `<span class="ace-lucky-pick-die">${esc(c.label)}</span>`
+          + `${sub ? `<span class="ace-lucky-pick-sub">${esc(sub)}</span>` : ""}`;
+        footer.appendChild(b);
+      }
+    };
+
+    root.addEventListener("click", async (ev) => {
+      const btn = ev.target?.closest?.("button");
+      if (!btn || !root.contains(btn)) return;
+      const action = btn.getAttribute("data-action");
+      if (stage === "pick" && action === "pick") {
+        ev.preventDefault(); ev.stopImmediatePropagation();
+        settle(true, { luckSpent: true, fresh, choice: btn.getAttribute("data-choice") });
+        close();
+        return;
+      }
+      if (stage !== "ask" || action !== "spend") return;
+      // Taken before the dialog's own handler, so the window stays open.
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      stage = "rolling";
+      for (const b of root.querySelectorAll("button")) b.disabled = true;
+      // Closed while the point is spent and the die is in the air: the roll is
+      // finished first, and then the roll keeps its own die (closing is not a
+      // second offer). Nothing is answered until the die has landed.
+      let closedEarly = false;
+      setOnClose(() => { closedEarly = true; });
+
+      // 1. The point, on the screen that said yes.
+      let spent = false;
+      try {
+        const { spendLuckByUuid } = await import("./luck.mjs");
+        spent = luckItemUuid ? await spendLuckByUuid(luckItemUuid) : false;
+      } catch (err) {
+        console.warn(`${MODULE_ID} | the luck point could not be spent from the Lucky box:`, err);
+      }
+      if (!spent) {
+        // The asking screen tries the spend itself, and rolls the die there.
+        settle(true, {});
+        close();
+        return;
+      }
+
+      // 2. The luck die, where everybody sees it.
+      try {
+        const { rollLuckDie } = await import("./luck.mjs");
+        const actor = luckRoll.actorUuid ? fromUuidSync(luckRoll.actorUuid) : null;
+        fresh = await rollLuckDie(actor, luckRoll.label ?? "Lucky");
+      } catch (err) {
+        console.warn(`${MODULE_ID} | the Lucky box could not roll the luck die; the asking screen `
+          + `rolls it instead:`, err);
+        settle(true, { luckSpent: true, fresh: null, choice: null });
+        close();
+        return;
+      }
+      if (closedEarly) {
+        console.log(`${MODULE_ID} | the Lucky box was closed while the luck die rolled, so the roll `
+          + `keeps its own die.`);
+        settle(true, { luckSpent: true, fresh, choice: null });
+        return;
+      }
+      // From here on, closing the box keeps the roll: the point is spent.
+      setOnClose(() => settle(true, { luckSpent: true, fresh, choice: null }));
+
+      // 3. Which die: the dice it may keep, the better green and the worse red.
+      let choices = [];
+      try {
+        const { luckChoices } = await import("./luck.mjs");
+        const offer = luckChoices(luckRoll, fresh);
+        if (offer.keep != null) {
+          settle(true, { luckSpent: true, fresh, choice: offer.keep });
+          close();
+          return;
+        }
+        choices = offer.choices;
+        showPick(choices);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | the Lucky box could not show the dice to choose from, so the `
+          + `roll keeps its own die:`, err);
+        settle(true, { luckSpent: true, fresh, choice: null });
+        close();
+      }
+    }, true);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

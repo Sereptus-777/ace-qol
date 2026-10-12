@@ -104,8 +104,11 @@ console.log("\nTHE CHAIN ROW IS THE CHARM PERSON ROW");
     /SILENCE MEANS/.test(save), "the default is off");
   // And it asks for it only where there is damage left to drop a target from:
   // his card, 2026-09-29, "No X" on a save that moves no hit points.
+  // ⚠️ 2026-10-11 (his rule: "The X stays while the roll is still open... When the
+  // row resolves and the damage is nothing, the X comes off that row."): one
+  // answer, SaveEngine._offersX, for every place that draws it.
   check("the phase-1 card asks for it only where damage is still to be rolled",
-    /canRemove: hasDamage === true,/.test(save), "one caller, one condition");
+    /canRemove: SaveEngine\._offersX\(r, \{ dealsDamage: hasDamage === true, halfOnSave \}\)/.test(save), "one caller, one condition");
   check("the post-hit card does not",
     !/canRemove/.test(ph), "no X on a grapple that already happened");
 

@@ -161,7 +161,7 @@ export class BreakFreeEngine {
       const content = `
         <div class="ace-qol-breakfree-card" style="border:1px solid #6b8e23;border-radius:8px;overflow:hidden;background:linear-gradient(180deg,#14140c,#0c0c08);font-family:'Signika',sans-serif;">
           <div style="display:flex;align-items:center;gap:12px;padding:11px 14px;background:rgba(107,142,35,0.18);border-bottom:1px solid rgba(107,142,35,0.4);">
-            <img src="${img}" style="width:48px;height:48px;border-radius:8px;border:1px solid #6b8e23;flex-shrink:0;object-fit:cover;" />
+            <img class="ace-face" src="${img}" style="width:48px;height:48px;border-radius:8px;border:1px solid #6b8e23;flex-shrink:0;" />
             <div>
               <div style="color:#cfe8a0;font-weight:700;font-size:18px;">${foundry.utils.escapeHTML(actor.name)} is entangled</div>
               <div style="color:#9bb37a;font-size:14px;">${foundry.utils.escapeHTML(meta.label || "Restrained")}</div>

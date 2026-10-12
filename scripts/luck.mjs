@@ -205,7 +205,18 @@ function door() {
   return eng;
 }
 
-/** "Spend a luck point?" Returns { yes, spentAlready }. */
+/**
+ * "Spend a luck point?" Returns { yes, spentAlready, fresh, choice }.
+ *
+ * ⚠️🔴 ONE BOX FOR ONE ROLL (his rule, 2026-10-12: "When a roll really fails,
+ * one box opens, the one ACE draws. Spending the point rolls the second die in
+ * that same box and he picks which die to keep there. The old dialog in
+ * reaction-engine does not open. Two boxes for one roll is the bug. Closing a box
+ * is not a second offer."). With `opts.luckRoll` the Lucky popup spends the point,
+ * rolls the luck die and asks which die to keep, all in itself, and answers with
+ * `fresh` (the luck die) and `choice` (what was kept; null when it was closed
+ * without a pick, which keeps the roll as it was).
+ */
 async function askSpend(opts) {
   const eng = door();
   if (!eng) return { yes: false, spentAlready: false };
@@ -222,7 +233,48 @@ async function askSpend(opts) {
     ...opts,
     luckItemUuid: opts.luckItemUuid,
   });
-  return { yes: !!res?.accepted, spentAlready: !!res?.choiceData?.luckSpent };
+  const cd = res?.choiceData ?? {};
+  return { yes: !!res?.accepted, spentAlready: !!cd.luckSpent,
+    fresh: Number.isFinite(Number(cd.fresh)) && cd.fresh !== null ? Number(cd.fresh) : null,
+    choice: cd.choice ?? null };
+}
+
+/**
+ * What the box shows for each face the luck die can show: how good it is for the
+ * one choosing, and the words under it. `sub` is what anybody may read; `gmSub`
+ * is the GM's own line (a total and the verdict).
+ * @param {(face:number) => {score:number, sub:string, gmSub:string}} rate
+ */
+function faceTable(rate) {
+  const table = {};
+  for (let f = 1; f <= 20; f++) table[f] = rate(f);
+  return table;
+}
+
+/**
+ * The dice the one Lucky box offers once the luck die has landed. Pure: the box
+ * (reaction-engine.mjs) and the self-test ask this same function.
+ * @returns {{choices: Array<{id,label,sub,gmSub,tone}>, keep: string|null}}
+ *          `keep` when there is nothing to choose (the dice match).
+ */
+export function luckChoices(luckRoll, fresh) {
+  const table = luckRoll?.table ?? {};
+  const rate = (f) => table[f] ?? table[String(f)] ?? { score: f, sub: "", gmSub: "" };
+  let choices;
+  if (luckRoll?.mode === "defend") {
+    const theirs = Number(luckRoll.theirs);
+    if (Number(fresh) === theirs) return { choices: [], keep: "theirs" };
+    choices = [
+      { id: "theirs", label: luckRoll.theirsLabel ?? `Their ${theirs}`, ...rate(theirs) },
+      { id: "mine", label: `Your ${fresh}`, ...rate(fresh) },
+    ];
+  } else {
+    const faces = [...new Set([...(luckRoll?.shown ?? [luckRoll?.kept]), fresh]
+      .map(Number).filter(Number.isFinite))];
+    if (faces.length < 2) return { choices: [], keep: String(luckRoll?.kept) };
+    choices = faces.map(f => ({ id: String(f), label: `Keep ${f}`, ...rate(f) }));
+  }
+  return { choices: toneChoices(choices), keep: null };
 }
 
 /**
@@ -239,20 +291,11 @@ export function toneChoices(choices) {
   }));
 }
 
-/** "Which d20?" Returns the chosen id, or null when the box was closed. */
-async function askChoice(opts) {
-  const eng = door();
-  if (!eng) return null;
-  const res = await eng._promptReaction({
-    type: "luckyChoice", title: "Lucky", heading: "Lucky: which d20?",
-    icon: "fa-clover", accentColor: LUCK_GREEN,
-    ...opts,
-  });
-  return res?.accepted ? (res.choiceData?.choice ?? null) : null;
-}
-
-/** Roll the luck die where everybody sees it, and wait for it to land. */
-async function rollLuckDie(actor, label) {
+/**
+ * Roll the luck die where everybody sees it, and wait for it to land.
+ * Exported for the Lucky popup, which rolls it in the box that asked.
+ */
+export async function rollLuckDie(actor, label) {
   const roll = await new Roll(withHalflingLuck("1d20", actor)).evaluate();
   safeShowForRoll(roll, `Lucky (${label})`);
   await awaitDiceSettle(15000);
@@ -313,6 +356,8 @@ export async function ownRoll(o) {
   if (feat.missingUses) { skip(actor, `its Lucky feat has no uses set on the item (set Uses to 3, back on a long rest)`); return unchanged; }
   if (!(feat.left > 0)) { skip(actor, "no luck points left"); return unchanged; }
   const now = judge(total, kept);
+  // ⚠️ ONLY A ROLL THAT FAILED (his rule, 2026-10-12). Not known is not failed.
+  if (now.fails == null) { skip(actor, `nobody could say whether the ${kind} failed, so Lucky is not offered`); return unchanged; }
   if (!now.fails) { skip(actor, `the ${kind} is already a success (${now.words})`); return unchanged; }
 
   const ledger = o.ledger ?? { spenders: new Set(), original: { d20: kept, total } };
@@ -321,9 +366,26 @@ export async function ownRoll(o) {
   const cancels = ledger.spenders.size > 0;
 
   await untilDiceLand(o.dice ?? "none");
+  // The faces this roll already shows; the luck die joins them in the box.
+  const shown = [...new Set([kept, ...(o.d20s ?? [])].map(Number).filter(Number.isFinite))];
   const ask = await askSpend({
     reactorActor: actor, reactorToken: actor.getActiveTokens?.()[0] ?? null,
     luckItemUuid: feat.item.uuid,
+    // Two spends cancel with no die, so only a first spend rolls in the box.
+    luckRoll: cancels ? null : {
+      mode: "own", actorUuid: actor.uuid ?? null, label: what, kept, shown,
+      ask: `Your luck die shows {fresh}. Which d20 does your ${noDC(what)} use?`,
+      // Better for the roller: a success over a failure, then the higher total.
+      // The roller may read their own total (it is their bonus); the word only
+      // when this screen knows it.
+      table: faceTable((f) => {
+        const t = total - kept + f;
+        const j = judge(t, f);
+        const word = noDC(j.words ?? "");
+        return { score: (j.fails === true ? 0 : j.fails === false ? 2 : 1) * 10000 + t,
+          sub: word ? `${t}, ${word}` : `${t}`, gmSub: `${t}, ${j.words ?? ""}`.replace(/,\s*$/, "") };
+      }),
+    },
     /* ⚠️ WHAT ROLLED, AND WHAT IT ROLLED. His line: "Dawnbringer rolled 16.
        Spend a luck point and roll another d20? 2 of 3 left." An attack names the
        weapon; a save or a check names itself. Neither says what it was against
@@ -346,25 +408,22 @@ export async function ownRoll(o) {
       note: `Lucky: two luck points spent on one roll cancel; it stands as first rolled (${ledger.original.d20})` };
   }
 
-  const fresh = await rollLuckDie(actor, what);
-  const faces = [...new Set([kept, ...(o.d20s ?? []), fresh].map(Number).filter(Number.isFinite))];
+  // The luck die was rolled in the box, and the box asked which die to keep.
+  let fresh = ask.fresh;
   let face = kept;
-  if (faces.length > 1) {
-    // Better for the roller: a success over a failure, then the higher total.
-    const choices = toneChoices(faces.map(f => {
-      const t = total - kept + f;
-      const j = judge(t, f);
-      return { id: String(f), label: `Keep ${f}`, sub: `${t}, ${noDC(j.words)}`, score: (j.fails ? 0 : 1) * 10000 + t };
-    }));
-    const picked = await askChoice({
-      reactorActor: actor, reactorToken: actor.getActiveTokens?.()[0] ?? null,
-      description: `Your luck die shows ${fresh}. Which d20 does your ${noDC(what)} use?`,
-      choices,
-    });
-    if (picked == null) say(`${nameOf(actor)} closed the choice without picking, so the roll keeps ${kept}.`);
-    else face = Number(picked);
+  if (fresh == null) {
+    // ⚠️ THE BOX SPENT THE POINT AND COULD NOT ROLL. The point is gone, so the
+    // die is still owed: it is rolled here, where everybody sees it, and the
+    // better die for the roller is kept, because there is no box left to ask.
+    console.warn(`${LOG} | ${nameOf(actor)}'s Lucky box could not roll the luck die, so it is rolled `
+      + `here and the better die is kept for them.`);
+    fresh = await rollLuckDie(actor, what);
+    const t = (f) => { const j = judge(total - kept + f, f); return (j.fails === false ? 2 : j.fails == null ? 1 : 0) * 10000 + f; };
+    face = t(fresh) > t(kept) ? fresh : kept;
+  } else if (ask.choice == null) {
+    say(`${nameOf(actor)} closed the choice without picking, so the roll keeps ${kept}.`);
   } else {
-    say(`${nameOf(actor)}'s luck die matches the roll (${fresh}), so there is nothing to choose.`);
+    face = Number(ask.choice);
   }
   const newTotal = total - kept + face;
   say(`${nameOf(actor)} rolled ${fresh} with luck and kept ${face} (${what}: ${total} → ${newTotal}).`);
@@ -436,7 +495,9 @@ export async function incomingHit(o) {
   const cancels = ledger.spenders.size > 0;
 
   await untilDiceLand(o.dice ?? "none");
-  const words = `${result.attackTotal} against AC ${result.effectiveAC ?? result.ac}${result.hitResult === "critical" ? ", a critical" : ""}`;
+  // The crit is said once, by the line below (his rule, 2026-10-11: "27 against
+  // AC 26, a critical hit.", not "a critical, a critical hit").
+  const words = `${result.attackTotal} against AC ${result.effectiveAC ?? result.ac}`;
   const ask = await askSpend({
     reactorActor: target, reactorToken: result.targetToken ?? null,
     attackerName: nameOf(attacker), attackerImg: attacker?.img ?? null,
@@ -452,6 +513,25 @@ export async function incomingHit(o) {
         + `choose which die the attack uses? ${feat.left} of ${feat.max} left.`,
     gmNote: `${words}, ${result.hitResult === "critical" ? "a critical hit" : "hits"}.`,
     acceptLabel: "Spend a luck point", declineLabel: "Keep the roll",
+    luckRoll: cancels ? null : (() => {
+      const theirs = Number(result.d20Result);
+      const forYou = (h, t) => (h === "critical" ? 0 : isAHit(h) ? 1 : 2) * 10000 - t;
+      const label = (h) => h === "critical" ? "a critical hit" : h === "hit" ? "hits you" : h === "fumble" ? "a fumble, misses" : "misses";
+      return {
+        mode: "defend", actorUuid: target.uuid ?? null, label: `against ${itemName}`, theirs,
+        theirsLabel: `Their ${theirs}`,
+        ask: `Your luck die shows {fresh}. Which die does ${nameOf(attacker)}'s attack use?`,
+        // Better for the defender: a miss over a hit over a critical, then the
+        // lower total. The defender reads the word; the attacker's total is the GM's.
+        table: faceTable((f) => {
+          const t = result.attackTotal - theirs + f;
+          const h = judgeAttack({ d20: f, total: t, ac: result.effectiveAC ?? result.ac,
+            fullCover: !!result.coverResult?.isFullCover, mirrorImage: !!result.mirrorImageRedirect,
+            autoCrit: !!result.autoCrit });
+          return { score: forYou(h, t), sub: label(h), gmSub: `${t}, ${label(h)}` };
+        }),
+      };
+    })(),
   });
   if (!ask.yes) { say(`${nameOf(target)} let the hit stand.`); return same; }
   const paid = ask.spentAlready || await spendLuck(feat.item);
@@ -464,34 +544,25 @@ export async function incomingHit(o) {
       note: `Lucky: ${nameOf(attacker)} and ${nameOf(target)} both spent a luck point; they cancel and the roll stands as first rolled (${ledger.original.d20})` };
   }
 
-  const fresh = await rollLuckDie(target, `against ${itemName}`);
   const theirs = Number(result.d20Result);
-  const judgeWith = (face) => {
-    const t = result.attackTotal - theirs + face;
-    const hit = judgeAttack({ d20: face, total: t, ac: result.effectiveAC ?? result.ac,
-      fullCover: !!result.coverResult?.isFullCover, mirrorImage: !!result.mirrorImageRedirect,
-      autoCrit: !!result.autoCrit });
-    return { t, hit };
-  };
-  const a = judgeWith(theirs), b = judgeWith(fresh);
-  const forYou = (h, t) => (h === "critical" ? 0 : isAHit(h) ? 1 : 2) * 10000 - t;
-  const label = (h) => h === "critical" ? "a critical hit" : h === "hit" ? "hits you" : h === "fumble" ? "a fumble, misses" : "misses";
-  let picked = "theirs";
-  if (fresh !== theirs) {
-    picked = await askChoice({
-      reactorActor: target, reactorToken: result.targetToken ?? null,
-      attackerName: nameOf(attacker), attackerImg: attacker?.img ?? null,
-      description: `Your luck die shows ${fresh}. Which die does ${nameOf(attacker)}'s attack use?`,
-      // Better for the defender: a miss over a hit over a critical, then the
-      // lower total. Their 17 → 27, hits you: red. Your 15 → 25, misses: green.
-      choices: toneChoices([
-        { id: "theirs", label: `Their ${theirs}`, sub: `${a.t}, ${label(a.hit)}`, score: forYou(a.hit, a.t) },
-        { id: "mine", label: `Your ${fresh}`, sub: `${b.t}, ${label(b.hit)}`, score: forYou(b.hit, b.t) },
-      ]),
-    });
-    if (picked == null) say(`${nameOf(target)} closed the choice without picking, so the attack keeps its own die.`);
-  } else {
-    say(`${nameOf(target)}'s luck die matches the attacker's (${fresh}), so there is nothing to choose.`);
+  let fresh = ask.fresh;
+  let picked = ask.choice;
+  if (fresh == null) {
+    // The box spent the point and could not roll: rolled here, and the die
+    // better for the defender is kept (no box is left to ask).
+    console.warn(`${LOG} | ${nameOf(target)}'s Lucky box could not roll the luck die, so it is rolled `
+      + `here and the die better for them is kept.`);
+    fresh = await rollLuckDie(target, `against ${itemName}`);
+    const judgeWith = (face) => {
+      const t = result.attackTotal - theirs + face;
+      const hit = judgeAttack({ d20: face, total: t, ac: result.effectiveAC ?? result.ac,
+        fullCover: !!result.coverResult?.isFullCover, mirrorImage: !!result.mirrorImageRedirect,
+        autoCrit: !!result.autoCrit });
+      return (hit === "critical" ? 0 : isAHit(hit) ? 1 : 2) * 10000 - t;
+    };
+    picked = judgeWith(fresh) > judgeWith(theirs) ? "mine" : "theirs";
+  } else if (picked == null) {
+    say(`${nameOf(target)} closed the choice without picking, so the attack keeps its own die.`);
   }
   const useMine = picked === "mine";
   const face = useMine ? fresh : theirs;

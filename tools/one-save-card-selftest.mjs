@@ -176,7 +176,7 @@ console.log("\nTHE POST-HIT SAVE KEEPS ONE CARD");
   // The X is offered only where damage is still to be rolled, and the shell tells
   // the row whether the quiet line already carries the formula.
   check("the QOL card still uses that same row, so neither can drift",
-    /saveResultRowHtml\(r, \{ \.\.\.opts,[\s\S]{0,80}canRemove: hasDamage === true,/.test(save),
+    /saveResultRowHtml\(r, \{ \.\.\.opts,[\s\S]{0,80}canRemove: SaveEngine\._offersX\(r, \{ dealsDamage: hasDamage === true, halfOnSave \}\)/.test(save),
     "both cards, one renderer");
 
   // AND THE THINGS HE TOLD ME NOT TO TOUCH.

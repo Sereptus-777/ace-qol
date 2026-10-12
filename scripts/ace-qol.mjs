@@ -65,7 +65,7 @@ import { registerCardsWaitForDice } from "./dice-hold.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
 import { emanatesFromCaster, drawCasterEmanation, suppressesTemplate } from "./caster-emanation.mjs";
-import { ConditionVisuals, BODY_VISUAL_STATUSES } from "./condition-visuals.mjs";
+import { ConditionVisuals, BODY_VISUAL_STATUSES, aceDrawsOnBody, LEFT_TO_JB2A } from "./condition-visuals.mjs";
 import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 import { HookAPI }              from "./hook-api.mjs";
 import { OverTimeEngine }       from "./overtime-engine.mjs";
@@ -172,6 +172,7 @@ import { PressGate } from "./gate/press-gate.mjs";
 // The One Road: a card goes through the card door, which waits for any dice that decided it.
 import { CardDoor } from "./road/doors.mjs";
 import { TableView } from "./road/table-view.mjs";
+import { Verdict } from "./road/verdict.mjs";
 
 /**
  * Authorise an inbound PLAYER-PROXY socket payload.
@@ -510,6 +511,10 @@ Hooks.once("init", () => {
   // it, and kept out of the try below so nothing there can stop it registering.
   try { TableView.register(); }
   catch (err) { console.error(`${MODULE_ID} | the table split failed to register; cards will carry their numbers:`, err); }
+  // Pass or fail from the screen that holds the DC (his rule, 2026-10-12).
+  try { Verdict.register(); }
+  catch (err) { console.error(`${MODULE_ID} | the verdict door failed to register; a player's save `
+    + `against a creature's DC will show no word until the GM's screen judges it:`, err); }
 
   try {
     QolSettings.register();
@@ -545,6 +550,14 @@ Hooks.once("init", () => {
   // Registering here puts the engine ahead of all of them. It still never
   // cancels and never steers; it reads, checks the books, and refuses to let a
   // dead button pass without saying so.
+  // ── A COPIED ATTACK ON A MULTIATTACK FEATURE IS THE REAL ONE (2026-10-10) ──
+  // Ahead of the reading on purpose: a press of the copy is cancelled and the
+  // real Bite or Claw is pressed instead, so the reading, the gate and every
+  // pipeline only ever see the real attack. One system, not two.
+  try { MultiattackEngine.registerRedirect(); }
+  catch (err) { console.error(`${MODULE_ID} | the Multiattack hand-off failed to start, so a `
+    + `copied attack rolls on its own instead of as the real item:`, err); }
+
   try { ActionInterceptor.register(); }
   catch (err) { console.error(`${MODULE_ID} | THE READING failed to start — every pipeline `
     + `falls back to guessing on its own:`, err); }
@@ -1065,9 +1078,26 @@ Hooks.on("preCreateActiveEffect", (effect, data, _options, _userId) => {
     const key = data?.flags?.[MODULE_ID]?.conditionKey ?? effect?.flags?.[MODULE_ID]?.conditionKey;
     if (!key) return;                                        // not one of ACE's conditions
     const statuses = [...(data?.statuses ?? effect?.statuses ?? [])];
-    const drawn = statuses.filter(s => BODY_VISUAL_STATUSES.has(s));
-    if (!drawn.length) return;                               // ACE draws nothing for this one
     if (data?.flags?.autoanimations || effect?.flags?.autoanimations) return;
+    const drawn = statuses.filter(s => aceDrawsOnBody(s));
+    if (!drawn.length) {
+      /* ⚠️🔴 CHARMED IS AUTOMATED ANIMATIONS' NOW (his rule, 2026-10-12: "He
+         wants the JB2A hearts going around the token."), so its own clip plays.
+         The rest of his September 30 rule still holds: "Two sources, one Charmed
+         condition. One animation on the token." A creature already charmed by
+         somebody gets no second clip from a second charm. */
+      const jb2a = statuses.filter(s => LEFT_TO_JB2A.has(s));
+      const actor = effect?.parent ?? null;
+      const already = jb2a.length && (actor?.effects?.contents ?? [])
+        .some(e => !e.disabled && jb2a.some(s => e.statuses?.has?.(s)));
+      if (!already) return;                                    // its first source: AA plays it
+      effect.updateSource({ "flags.autoanimations": {
+        isEnabled: false, isCustomized: false, fromAmmo: false, version: 5,
+      } });
+      console.log(`${MODULE_ID} | "${data?.name ?? key}": ${actor?.name ?? "this creature"} is already `
+        + `${jb2a.join(", ")}, so this second source starts no second clip.`);
+      return;
+    }
     effect.updateSource({ "flags.autoanimations": {
       isEnabled: false, isCustomized: false, fromAmmo: false, version: 5,
     } });

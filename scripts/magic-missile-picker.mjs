@@ -182,7 +182,7 @@ export class MagicMissilePicker {
           : `<span style="${BADGE_PC}">PC</span>`;
         return `
           <div class="ace-mm-row" data-token-id="${c.tokenId}" style="${rowStyle}">
-            <img class="ace-mm-portrait" width="56" height="56" src="${c.img}" alt="${c.name}" style="${PORTRAIT_STYLE}" />
+            <img class="ace-mm-portrait ace-face" width="56" height="56" src="${c.img}" alt="${c.name}" style="${PORTRAIT_STYLE}" />
             <div style="${INFO_STYLE}">
               <div style="${NAME_STYLE}">${c.name} ${npcBadge}</div>
               <div style="${META_STYLE}">

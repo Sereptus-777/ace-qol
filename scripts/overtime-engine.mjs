@@ -859,7 +859,7 @@ export class OverTimeEngine {
     const cardHtml = `
       <div class="ace-qol-overtime-card ace-qol-regen-card${applied ? " ace-qol-ot-spent" : ""}">
         <div class="ace-qol-ot-header">
-          <img src="${tokenImg}" class="ace-qol-ot-token-img" />
+          <img src="${tokenImg}" class="ace-qol-ot-token-img ace-face" />
           <div class="ace-qol-ot-header-text">
             <strong class="ace-qol-ot-name">${tokenName}</strong>
             <span class="ace-qol-ot-label">— ${label}</span>
@@ -974,7 +974,7 @@ export class OverTimeEngine {
     const cardHtml = `
       <div class="ace-qol-overtime-card ace-qol-aura-card">
         <div class="ace-qol-ot-header">
-          <img src="${sourceToken.document?.texture?.src ?? sourceToken.actor?.img ?? "icons/svg/aura.svg"}" class="ace-qol-ot-token-img" />
+          <img src="${sourceToken.document?.texture?.src ?? sourceToken.actor?.img ?? "icons/svg/aura.svg"}" class="ace-qol-ot-token-img ace-face" />
           <div class="ace-qol-ot-header-text">
             <strong class="ace-qol-ot-name">${sourceToken.name}</strong>
             <span class="ace-qol-ot-label">— ${aura.label || "Aura"}</span>
@@ -1194,7 +1194,7 @@ export class OverTimeEngine {
     const cardHtml = `
       <div class="ace-qol-overtime-card">
         <div class="ace-qol-ot-header">
-          <img src="${tokenImg}" class="ace-qol-ot-token-img" />
+          <img src="${tokenImg}" class="ace-qol-ot-token-img ace-face" />
           <div class="ace-qol-ot-header-text">
             <strong class="ace-qol-ot-name">${tokenName}</strong>
             <span class="ace-qol-ot-label">— ${label}</span>

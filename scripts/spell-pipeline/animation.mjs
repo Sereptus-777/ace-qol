@@ -26,9 +26,14 @@ export class AnimationHelper {
       // ACE-fx or Forge. No template, no streak, no boom." The area is vetoed
       // before it is built and the save is thrown away, but the animation is a
       // third road out of the same cast and had nobody watching it.
+      // ⚠️ IT WAITS FOR THE ANSWER, NOW THAT IT PLAYS AT THE CAST (2026-10-11):
+      // the one reader the cast flourish waited on, which returns at once when
+      // nobody at the table can counter.
       try {
         const { ReactionEngine } = await import("../reaction-engine.mjs");
-        if (ReactionEngine.castIsDead({ activity: ctx?.activity ?? null,
+        const decision = await ReactionEngine.awaitCastDecision(ctx?.activity ?? ctx?.item?.uuid ?? null,
+          { item: ctx?.item ?? null, actor: ctx?.actor ?? null });
+        if (decision?.abort || ReactionEngine.castIsDead({ activity: ctx?.activity ?? null,
           item: ctx?.item ?? null, actor: ctx?.actor ?? null })) {
           console.log(`${MODULE_ID} | "${ctx?.item?.name ?? "that cast"}" was counterspelled - `
             + `nothing is played for it.`);
@@ -60,25 +65,11 @@ export class AnimationHelper {
         return;
       }
 
-      const aa = globalThis.AutomatedAnimations ?? window.AutomatedAnimations;
-      if (!aa?.playAnimation) {
-        // ⚠️ A SILENT RETURN HERE READS AS "THIS SPELL HAS NO ANIMATION".
-        console.warn(`${MODULE_ID} | Automated Animations is not exposing `
-          + `playAnimation, so "${ctx.item?.name}" will not animate. `
-          + `Its API may have been renamed.`);
-        return;
-      }
-
-      // Resolve targets from picker result into Token objects
-      const targets = AnimationHelper._extractTargets(result);
-
-      // Set game.user.targets via per-Token setTarget (V13 API)
-      if (targets.length > 0) {
-        AnimationHelper._setUserTargets(targets);
-      }
-
-      aa.playAnimation(casterToken, ctx.item);
-      console.debug(`${MODULE_ID} | AnimationHelper: fired AA for ${ctx.item.name} (${targets.length} targets)`);
+      // ⚠️ AUTOMATED ANIMATIONS OWNS IT, SO ACE PLAYS NOTHING (2026-10-11). AA
+      // plays on its own when the item is used, its dice are rolled or its
+      // template lands; calling it again here was a second clip for one cast.
+      console.debug(`${MODULE_ID} | AnimationHelper: "${ctx.item?.name}" is Automated Animations' `
+        + `to animate; ACE plays nothing for it.`);
     } catch (err) {
       console.warn(`${MODULE_ID} | AnimationHelper failed (non-fatal):`, err);
     }

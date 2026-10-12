@@ -621,7 +621,7 @@ export class FallPipeline {
       speaker: ChatMessage.getSpeaker({ token: tokenDoc }),
       content: `<div class="ace-qol-damage-card">
           <div class="ace-qol-dmg-header">
-            <img src="${portraitImg}" class="ace-qol-dmg-item-img" alt="" />
+            <img src="${portraitImg}" class="ace-qol-dmg-item-img ace-face" alt="" />
             <strong class="ace-qol-dmg-item-name">${name} falls ${result.distanceFt} feet</strong>
           </div>
           <div class="ace-qol-dmg-roll-section">

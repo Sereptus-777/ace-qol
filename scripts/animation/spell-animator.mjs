@@ -23,14 +23,28 @@ import { animationFor } from "./autorec.mjs";
 // ⚠️ Read inside a function, never at load: both of these sit in import cycles
 // through the entry file, and a top-level read of one is how a module dies on
 // the way in (2026-08-28, again 2026-09-06).
-import { BODY_VISUAL_STATUSES } from "../condition-visuals.mjs";
+import { aceDrawsOnBody, LEFT_TO_JB2A } from "../condition-visuals.mjs";
+import { spellKey } from "../rules/spell-name.mjs";
 import { conditionStatuses } from "../condition-library.mjs";
+// The cast flourish, for the one kind of spell that has no other picture at the cast.
+import { AceFX, DAMAGE_THEME } from "../ace-fx.mjs";
 
 /* ── ACE DRAWS THE CONDITION. NOBODY ELSE PAINTS IT ON THE TOKEN ─────────────
  *
  * His table, 2026-09-30: *"spell-animator does not play a JB2A condition clip
  * for Charm Person. ACE already draws the hearts. Cast flourish is fine.
- * On-token condition is not."*
+ * On-token condition is not."* And again, 2026-10-11: *"Charm Person, and any
+ * spell whose only clip is a condition badge, still gets a flourish at the
+ * cast... The flourish is not that badge. Do not put the ring back on a spell
+ * that already has its own clip."* So the flourish plays HERE, in place of the
+ * refused badge, and nowhere else (ace-fx.mjs no longer fires on its own).
+ *
+ * ⚠️🔴 AND FOR CHARM PERSON THE SEPTEMBER 30 NOTE IS WRONG (his rule,
+ * 2026-10-12: "He wants the JB2A hearts going around the token. He does not want
+ * the hearts ACE draws on the body. Play the JB2A clip."). ACE no longer draws
+ * charmed (condition-visuals.mjs, LEFT_TO_JB2A), so its badge is not refused
+ * here and plays at the cast, and Charm Person gets no flourish: it has its own
+ * clip. The rule below still holds for every condition ACE does draw.
  *
  * Automated Animations' curated record for Charm Person is
  * `jb2a.condition.boon.01.014.red` — a looping badge that sits ON the creature,
@@ -52,7 +66,8 @@ function aceAlreadyDrawsThis(entry, path) {
     if (!/(^|[.\-_/])condition([.\-_/]|$)/i.test(String(path ?? ""))) return null;
     const key = String(entry?.effect?.key ?? "").toLowerCase().trim();
     if (!key) return null;
-    const drawn = conditionStatuses(key).filter(s => BODY_VISUAL_STATUSES.has(s));
+    // Only what ACE draws itself. Charmed is the JB2A hearts (2026-10-12).
+    const drawn = conditionStatuses(key).filter(s => aceDrawsOnBody(s));
     return drawn.length ? drawn : null;
   } catch (_) {
     return null;     // unreadable: play it, rather than silently play nothing
@@ -97,8 +112,20 @@ export function registerAaStandDown() {
       // rule for them.
       if (data?.activeEffect === true || subject?.documentName === "ActiveEffect") {
         const statuses = [...(subject.statuses ?? [])].map(s => String(s).toLowerCase());
-        const drawn = statuses.filter(s => BODY_VISUAL_STATUSES.has(s));
-        if (!drawn.length) return;
+        // ⚠️🔴 CHARMED IS AA'S OWN CLIP NOW (his rule, 2026-10-12: "He wants the
+        // JB2A hearts going around the token."): only what ACE draws stands AA down.
+        const drawn = statuses.filter(s => aceDrawsOnBody(s));
+        if (!drawn.length) {
+          // One clip on the token however many sources (his rule, 2026-09-30): a
+          // creature already charmed by another effect gets no second one.
+          const jb2a = statuses.filter(s => LEFT_TO_JB2A.has(s));
+          const others = (subject.parent?.effects?.contents ?? []).filter(e => e.id !== subject.id && !e.disabled);
+          if (!jb2a.length || !others.some(e => jb2a.some(s => e.statuses?.has?.(s)))) return;
+          data.stopWorkflow = true;
+          console.log(`${MODULE_ID} | Automated Animations stands down for "${subject.name ?? subject.label}": `
+            + `${subject.parent?.name ?? "this creature"} is already ${jb2a.join(", ")} and has its clip.`);
+          return;
+        }
         data.stopWorkflow = true;
         console.log(`${MODULE_ID} | Automated Animations stands down for the effect `
           + `"${subject.name ?? subject.label}": it puts on ${drawn.join(", ")}, which ACE draws on `
@@ -106,9 +133,27 @@ export function registerAaStandDown() {
         return;
       }
 
-      // ── 2. AA PLAYING A CONDITION BADGE OFF THE ITEM'S USE ──────────────
       const entry = globalThis.game?.aceQol?.SpellPipeline?._getEntry?.(subject) ?? null;
       if (!entry) return;
+
+      // ── 2. A CAST ACE OWNS: AUTOMATED ANIMATIONS IS ACTUALLY STOPPED ────
+      //
+      // ⚠️🔴 THE OWNER WAS DECIDED AND THE OTHER SIDE WAS NEVER TOLD (his rule,
+      // 2026-10-11: "ACE only stands it down for a condition badge, so a heal and
+      // a save spell get AA's clip and ACE's clip. One owner per cast, decided
+      // before either plays, and the other one is actually stopped."). AA plays a
+      // heal or a damaging spell when its dice are rolled (its dnd5e.rollDamageV2
+      // hook), so Cure Wounds' heal roll played AA's clip and then ACE played its
+      // own. The same answer both sides read, whoOwnsThisCast, stops AA here for
+      // every workflow of a cast ACE owns: the use, the attack and the damage.
+      if (whoOwnsThisCast(subject, entry) === "ace") {
+        data.stopWorkflow = true;
+        console.log(`${MODULE_ID} | Automated Animations stands down for "${subject.name}": ACE owns `
+          + `this cast and plays its one clip at the cast. One owner, one clip, one sound.`);
+        return;
+      }
+
+      // ── 3. AA PLAYING A CONDITION BADGE OFF THE ITEM'S USE ──────────────
       const anim = animationFor(subject);
       const drawn = aceAlreadyDrawsThis(entry, anim?.path);
       if (!drawn) return;
@@ -149,6 +194,27 @@ export function registerAaStandDown() {
 // worse than the silence this whole thread started with.
 const TEMPLATE_SHAPES = new Set(["template-save", "template-trigger", "template-pool"]);
 
+/** The JB2A condition family: a badge that sits on the creature. */
+const CONDITION_FAMILY = /(^|[.\-_/])condition([.\-_/]|$)/i;
+
+/* ⚠️🔴 ACE'S OWN LOOKS, BY SPELL (his rule, 2026-10-12: "Frostbite plays the
+   silhouette you drew, on the target, inside its square... The clip that plays
+   is the Frostbite silhouette made for this spell, the one that is yours."). The
+   frost crust masked to the creature's own picture was made for Frostbite in
+   June (ace-fx.mjs); it lost its trigger when the save-time crust went, and with
+   it Frostbite's picture. A look here is that spell's clip, played at the cast
+   on each target. The borrowed record, if there is one, still plays with it,
+   fitted to the target's square. Keyed by the spell's name, its edition suffix
+   taken off. */
+const ACE_LOOKS = Object.freeze({
+  frostbite: { silhouette: "cold" },
+});
+
+/** ACE's own look for this spell, or null. */
+export function aceLookFor(item) {
+  try { return ACE_LOOKS[spellKey(item?.name)] ?? null; } catch (_) { return null; }
+}
+
 /**
  * Which system should animate this cast?
  *
@@ -163,7 +229,11 @@ export function whoOwnsThisCast(item, entry = null) {
   try {
     const shape = String(entry?.shape ?? "");
     if (TEMPLATE_SHAPES.has(shape)) return "automated-animations";
-    if (shape) return "ace";
+    // ⚠️ ACE OWNS A CAST ONLY WHEN IT HAS THE CLIP TO PLAY (2026-10-11). Owning
+    // means Automated Animations is stopped, and stopping it for a spell ACE has
+    // no clip for would leave the table with nothing.
+    // A spell with ACE's own look is ACE's, record or none (2026-10-12).
+    if (shape) return (animationFor(item) || aceLookFor(item)) ? "ace" : "automated-animations";
 
     // No entry at all means the pipeline is not driving this cast, so dnd5e runs
     // it normally and Automated Animations sees it the way it always has.
@@ -202,6 +272,21 @@ export async function playCuratedAnimation({ casterToken, item, targets = [], en
     }
 
     const anim = animationFor(item);
+    const look = aceLookFor(item);
+    const aimed = targets.filter(Boolean);
+    // ACE's own look, on every target, at the cast (the frost silhouette).
+    const playLook = () => {
+      if (!look?.silhouette) return false;
+      let any = false;
+      for (const t of aimed) any = AceFX.silhouetteBroadcast(t, DAMAGE_THEME[look.silhouette]) || any;
+      if (any) console.log(`${MODULE_ID} | "${item.name}" plays ACE's own ${look.silhouette} silhouette `
+        + `on ${aimed.map(t => t.name).join(", ")}, inside each one's square.`);
+      return any;
+    };
+    if (!anim && look) {
+      console.log(`${MODULE_ID} | "${item.name}" has no Automated Animations record; ACE's own look is its clip.`);
+      return playLook();
+    }
     if (!anim) {
       // ⚠️ SAY WHICH OF THE TWO IT IS. "Nobody curated this spell" and "the path
       // they curated does not exist in the installed library" are different
@@ -217,8 +302,8 @@ export async function playCuratedAnimation({ casterToken, item, targets = [], en
     if (drawn) {
       console.log(`${MODULE_ID} | the curated record for "${item.name}" is an on-token condition `
         + `clip (${anim.path}), and ACE draws ${drawn.join(", ")} on the body itself. It is not `
-        + `played here: one picture of a condition, not two. A cast flourish would still play.`);
-      return false;
+        + `played here: one picture of a condition, not two. The cast flourish plays instead.`);
+      return AceFX.castFlourish(casterToken, item);
     }
 
     const o = anim.options;
@@ -239,8 +324,27 @@ export async function playCuratedAnimation({ casterToken, item, targets = [], en
     // else lands on the caster's own square, which is right for a cone, a burst
     // and an aura alike.
     const isThrown = (anim.category === "range" || anim.category === "melee") && aim.length;
+    // ⚠️🔴 AN ON-TOKEN RECORD LANDS ON THE TARGET (his table, 2026-10-11: Cure
+    // Wounds' second clip "lands off the target and it has its own sound"). Its
+    // record is AA's "ontoken" kind, which AA plays on the creature it is about;
+    // this played every non-throw on the caster's own square.
+    const onTarget = anim.category === "ontoken" && aim.length;
+    /* ⚠️🔴 A CLIP THAT BELONGS ON THE CREATURE IS FITTED TO ITS SQUARE (his rule,
+       2026-10-12: "If the ice disk is still in the sequence, it is the same size
+       as the target's square and it does not hang outside it. It is never 30
+       feet."). Played at its own size, Frostbite's impact was a 30-foot disk and
+       Charm Person's hearts would be the same. A spell with ACE's own look, a
+       record its curator masked to the token, and a condition clip are fitted:
+       scaled to the token by the record's size and masked to it when asked.
+       Every other on-token record plays as it always has. */
+    const fitted = onTarget && (!!look || !!o.masked || CONDITION_FAMILY.test(String(anim.path ?? "")));
 
-    if (isThrown) {
+    if (onTarget) {
+      for (const t of aim) {
+        const e = seq.effect().file(anim.path).atLocation(t);
+        _applyOptions(e, o, fitted ? t : null);
+      }
+    } else if (isThrown) {
       for (const t of aim) {
         const e = seq.effect().file(anim.path).atLocation(casterToken).stretchTo(t);
         _applyOptions(e, o);
@@ -271,14 +375,17 @@ export async function playCuratedAnimation({ casterToken, item, targets = [], en
     // ── The secondary, when the curator asked for one ─────────────────────
     if (anim.secondary && aim.length) {
       for (const t of aim) {
-        const e = seq.effect().file(anim.secondary).atLocation(t).scale(o.scale);
+        const e = seq.effect().file(anim.secondary).atLocation(t);
+        if (fitted) { try { e.scaleToObject(o.size || 1); } catch (_) { e.scale(o.scale); } }
+        else e.scale(o.scale);
         if (o.tint) { try { e.tint(o.tint); } catch (_) {} }
       }
     }
 
     await seq.play();
     console.log(`${MODULE_ID} | played the curated animation for "${item.name}" `
-      + `(${anim.category}: ${anim.path})`);
+      + `(${anim.category}: ${anim.path}${fitted ? ", fitted to each target's square" : ""})`);
+    playLook();
     return true;
   } catch (err) {
     console.warn(`${MODULE_ID} | the animation for "${item?.name}" failed `
@@ -287,10 +394,16 @@ export async function playCuratedAnimation({ casterToken, item, targets = [], en
   }
 }
 
-/** Apply the curator's own options to one effect. */
-function _applyOptions(e, o) {
+/**
+ * Apply the curator's own options to one effect.
+ * @param {Token|null} [fitTo]  fit it to this creature's square instead of its own size
+ */
+function _applyOptions(e, o, fitTo = null) {
   try {
-    if (o.scale && o.scale !== 1) e.scale(o.scale);
+    if (fitTo) {
+      e.scaleToObject(o.size || 1);
+      if (o.masked) e.mask(fitTo);
+    } else if (o.scale && o.scale !== 1) e.scale(o.scale);
     if (o.opacity && o.opacity !== 1) e.opacity(o.opacity);
     if (o.playbackRate && o.playbackRate !== 1) e.playbackRate(o.playbackRate);
     if (o.delay) e.delay(o.delay);

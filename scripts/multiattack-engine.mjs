@@ -394,6 +394,14 @@ export class MultiattackEngine {
   /** True if the item can make an attack (weapon type, or has an attack activity). */
   static _isAttackItem(item) {
     if (!item) return false;
+    /* ⚠️🔴 THE MULTIATTACK FEATURE IS NEVER ONE OF ITS OWN ATTACKS (2026-10-10).
+       From his rule of that day, the feature carries a copy of each attack it
+       makes, so it has attack activities and would otherwise count as a weapon:
+       it would be offered as a swing inside its own chain, and its name would be
+       matched against its own text. Its copies hand off to the real item when
+       pressed (`redirectCopiedAttack`), so the real Bite and Claw stay the only
+       attacks this engine ever sees. */
+    if (MultiattackEngine.isMultiattackFeature(item)) return false;
     if (item.type === "weapon") return true;
     try {
       const acts = item.system?.activities;
@@ -648,25 +656,270 @@ export class MultiattackEngine {
 
   /** Parse "two claws and one bite" → [{item:Claw,count:2},{item:Bite,count:1}]. */
   static _parseMultiattack(text, attackItems) {
-    if (!text) return null;
-    const lower = text.toLowerCase();
-    const entries = [];
-    for (const item of attackItems) {
+    return this.readChain(text, attackItems).entries;
+  }
+
+  /**
+   * The forms an attack is limited to, from its name: "Beak (Raven or Hybrid
+   * Form Only)" is {raven, hybrid}. Null when the name names no form.
+   */
+  static formsOf(item) {
+    const m = String(item?.name ?? "").match(/\(([^)]*\bforms?\b[^)]*)\)/i);
+    if (!m) return null;
+    const words = m[1].toLowerCase().replace(/\bforms?\b|\bonly\b/g, " ").split(/\s*(?:,|\bor\b|\band\b|\/)\s*/)
+      .map(w => w.trim()).filter(Boolean);
+    return words.length ? new Set(words) : null;
+  }
+
+  /**
+   * THE ONE READER for which attacks a Multiattack makes and how many.
+   *
+   * His rules, 2026-10-10, after the first fill:
+   *   "1. A number in the text wins. Three scimitars means Scimitar, Scimitar,
+   *       Scimitar.
+   *    2. The word 'or' is a choice, not a pile. Two longswords or two longbows
+   *       is the first option only. The other attack stays on the sheet and stays
+   *       out of the chain.
+   *    3. If the text gives no number, take the buttons off again and write
+   *       nothing. One of every attack on the sheet is not a multiattack.
+   *    An attack whose name says it is only for a form stays out of the chain
+   *    unless every attack in that chain is the same form."
+   *
+   * ⚠️🔴 WHAT WAS WRONG, PROVEN FROM THE TEXTS. The count had to sit within three
+   * words of the name, so "three melee attacks with his scimitar" (four) read as
+   * no count. A count beginning "of which" was read as a count, so "only one of
+   * which can be a bite" became one Bite: that is a limit, not a number. And
+   * every option joined by "or" was piled into one chain.
+   *
+   * ⚠️ THE CHAIN AND THE SHEET READ IT THE SAME WAY. `_parseMultiattack` is this,
+   * so the pop-up after the first swing and the buttons on the feature cannot
+   * disagree about what a creature's Multiattack is.
+   *
+   * @returns {{entries: Array|null, kept: string|null, dropped: string|null,
+   *   formDropped: string[]}}
+   */
+  static readChain(text, attackItems) {
+    const out = { entries: null, kept: null, dropped: null, formDropped: [] };
+    if (!text) return out;
+    const lower = String(text).toLowerCase();
+
+    // Every counted mention of every attack on the sheet.
+    const hits = [];
+    for (const item of attackItems ?? []) {
       // Strip parenthetical qualifiers so "Bite (Hybrid Form)" / "Claws (Bear
       // Form)" (lycanthropes, Wild Shape) still match "...two bites..." in the
       // Multiattack text. Common in Curse of Strahd stat blocks.
       const base = (item.name ?? "").toLowerCase().replace(/\(.*?\)/g, "").trim();
       if (!base) continue;
       const esc = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      // <count> within ~3 words before the (optionally pluralized) weapon name.
-      const re = new RegExp(`\\b(one|two|three|four|five|six|seven|eight|\\d+)\\b(?:\\s+\\w+){0,3}?\\s+${esc}s?\\b`, "i");
-      const m = lower.match(re);
-      if (m) {
+      // <count>, up to five words, then the (optionally plural) name. Words only:
+      // a comma, colon or full stop ends the reach, so a count cannot leap a clause.
+      const re = new RegExp(`\\b(one|two|three|four|five|six|seven|eight|\\d+)\\b((?:\\s+\\w+){0,5}?)\\s+${esc}(?:e?s)?\\b`, "gi");
+      for (const m of lower.matchAll(re)) {
+        // "one of which can be a bite" is a limit on a total, never a count.
+        if (/^\s+of\b/.test(m[2] ?? "")) continue;
         const cnt = NUM_WORDS[m[1].toLowerCase()] ?? parseInt(m[1], 10);
-        if (cnt >= 1 && cnt <= 12) entries.push({ item, count: cnt });
+        if (!(cnt >= 1 && cnt <= 12)) continue;
+        hits.push({ item, count: cnt, at: m.index ?? 0, end: (m.index ?? 0) + m[0].length });
+        break;   // the first counted mention of each attack is its count
       }
     }
-    return entries.length ? entries : null;
+    if (!hits.length) return out;
+    hits.sort((a, b) => a.at - b.at);
+
+    // "or" between two counted options: the first option only.
+    let entries = hits;
+    const orRe = /\bor\b/g;
+    for (const m of lower.matchAll(orRe)) {
+      const p = m.index ?? 0;
+      const before = hits.filter(h => h.end <= p);
+      const after = hits.filter(h => h.at > p);
+      if (before.length && after.length) {
+        entries = before;
+        out.kept = String(text).slice(before[0].at, p).trim().replace(/[,;]\s*$/, "");
+        out.dropped = String(text).slice(p + 2, after[after.length - 1].end).trim();
+        break;
+      }
+    }
+
+    // Forms: all one form, or the form-only attacks stay out.
+    const forms = entries.map(e => MultiattackEngine.formsOf(e.item));
+    if (forms.some(Boolean)) {
+      let shared = null;
+      const allTagged = forms.every(Boolean);
+      if (allTagged) {
+        shared = new Set(forms[0]);
+        for (const f of forms.slice(1)) for (const w of [...shared]) if (!f.has(w)) shared.delete(w);
+      }
+      if (!allTagged || !shared?.size) {
+        out.formDropped = entries.filter((_, i) => forms[i]).map(e => e.item.name);
+        entries = entries.filter((_, i) => !forms[i]);
+      }
+    }
+
+    out.entries = entries.length ? entries.map(({ item, count, at }) => ({ item, count, at })) : null;
+    return out;
+  }
+
+  /* ═══ THE MULTIATTACK FEATURE CARRIES ITS ATTACKS ═════════════════════════
+     His rule, 2026-10-10: "Under Features, the Multiattack item has to say what
+     it does, and its button has to be those attacks... put one activity per
+     attack on that same feature, copied from the attack items on the sheet...
+     Do not invent a second system."
+
+     So the feature gets one attack activity per attack, copied from the real
+     item, and each copy remembers where it came from. When one is pressed it is
+     not rolled: `redirectCopiedAttack` hands the press to the real item's own
+     activity, so the swing is the same swing - the same reach, the same riders,
+     the same chain count - and this engine stays the only multiattack system.
+     The copy's numbers are still faithful, so the sheet shows the real to-hit and
+     damage, and a world without ACE still rolls it correctly on its own. */
+
+  /** Is this the creature's Multiattack feature? */
+  static isMultiattackFeature(item) {
+    return !!item && item.type !== "weapon" && /multi[\s-]?attack/i.test(item.name ?? "");
+  }
+
+  /** The attack activity an item swings with on the Attack action. */
+  static mainAttackActivity(item) {
+    const acts = item?.system?.activities;
+    const list = acts ? (typeof acts.values === "function" ? [...acts.values()] : Object.values(acts)) : [];
+    const attacks = list.filter(a => a?.type === "attack");
+    return attacks.find(a => (a?.activation?.type ?? "action") !== "bonus") ?? attacks[0] ?? null;
+  }
+
+  /**
+   * A copy of a real attack, as activity data for the Multiattack feature.
+   *
+   * ⚠️🔴 A FEATURE IS NOT A WEAPON, AND dnd5e TREATS THEM DIFFERENTLY. Proven from
+   * dnd5e 5.3.3: an attack on a weapon gets the weapon's base damage added at
+   * prepare time (`prepareFinalData`, only when the ITEM `offersBaseDamage`), its
+   * ability modifier added to that damage (`_processDamagePart`, only when the
+   * item is a weapon), and the weapon's magic bonus on both rolls. A feat has
+   * none of those. A plain copy of a claw onto a feat therefore rolled no claw
+   * dice at all. Each one is written in here explicitly, and the ability is set
+   * by name, because on a feat an unset ability falls back to Strength and a
+   * finesse claw would swing with the wrong one.
+   *
+   * ⚠️ PROFICIENCY: a feat always counts as proficient (FeatData multiplier 1)
+   * and so does an NPC's weapon. When the source says otherwise the difference is
+   * written into the bonus so the copy's to-hit matches the original's.
+   *
+   * @returns {object} activity source data, with a new id
+   */
+  static copyAttackActivity(srcItem, srcActivity, { sort = 0, randomId = null } = {}) {
+    const src = srcActivity;
+    const data = foundry.utils.deepClone(src.toObject());
+    const newId = randomId ? randomId() : foundry.utils.randomID();
+    data._id = newId;
+    data.name = srcItem.name;
+    data.img = srcItem.img ?? data.img;
+    data.sort = sort;
+
+    // The ability by name: what the original actually rolls with.
+    const ability = src.ability ?? null;
+    data.attack = data.attack ?? {};
+    if (data.attack.ability !== "none" && data.attack.ability !== "spellcasting") {
+      data.attack.ability = ability ?? (data.attack.ability || "");
+    }
+    // The type as the original prepared it (a weapon fills these from itself).
+    data.attack.type = {
+      value: src.attack?.type?.value || data.attack.type?.value || "melee",
+      classification: src.attack?.type?.classification || data.attack.type?.classification || "weapon",
+    };
+
+    // To-hit bonuses the weapon carried that a feat will not.
+    const bonus = [];
+    if (String(data.attack.bonus ?? "").trim()) bonus.push(String(data.attack.bonus).trim());
+    const sys = srcItem.system ?? {};
+    const magic = (sys.magicAvailable && Number(sys.magicalBonus)) ? Number(sys.magicalBonus) : 0;
+    if (magic && !data.attack.flat) bonus.push(String(magic));
+    const mult = Number(sys.proficiencyMultiplier);
+    if (!data.attack.flat && Number.isFinite(mult) && mult !== 1) {
+      bonus.push(mult === 0 ? "-@prof" : `-@prof + floor(@prof * ${mult})`);
+    }
+    data.attack.bonus = bonus.join(" + ").replace(/\+ -/g, "- ");
+
+    // Damage: the base the weapon would have added, then its own parts.
+    data.damage = data.damage ?? {};
+    const parts = [...(data.damage.parts ?? [])];
+    if (src.damage?.includeBase && sys.offersBaseDamage && sys.damage?.base?.formula) {
+      const base = foundry.utils.deepClone(sys.damage.base.toObject?.() ?? sys.damage.base);
+      const formula = String(sys.damage.base.formula ?? "");
+      const deterministic = !/d\d/i.test(formula);
+      const extra = [];
+      if (String(base.bonus ?? "").trim()) extra.push(String(base.bonus).trim());
+      if (srcItem.type === "weapon" && !deterministic && !/@mod/.test(`${formula} ${base.bonus ?? ""}`)) {
+        extra.push("@mod");
+      }
+      if (srcItem.type === "weapon" && magic) extra.push(String(magic));
+      base.bonus = extra.join(" + ");
+      delete base.base;
+      delete base.locked;
+      parts.unshift(base);
+    }
+    data.damage.parts = parts;
+    data.damage.includeBase = false;
+
+    // What belonged to the original item stays with it.
+    data.effects = [];
+    data.uses = { spent: 0, max: "", recovery: [] };
+    if (data.consumption?.targets) {
+      data.consumption.targets = data.consumption.targets.filter(t =>
+        !((t?.type === "itemUses" || t?.type === "activityUses") && !t?.target));
+    }
+
+    data.flags = data.flags ?? {};
+    data.flags[MODULE_ID] = {
+      ...(data.flags[MODULE_ID] ?? {}),
+      multiattackFrom: { itemId: srcItem.id, activityId: src.id, itemName: srcItem.name },
+    };
+    return data;
+  }
+
+  /**
+   * A copy on the Multiattack feature is pressed: press the real one instead.
+   *
+   * ⚠️ REGISTERED BEFORE THE READING, so the copy never starts down the road.
+   * The reading, the gate and every pipeline see the real Bite or Claw, exactly
+   * as if it had been pressed on the sheet, which is the whole point of having
+   * one system. Returns false to stop the copy; anything else lets it roll.
+   *
+   * ⚠️ IF THE REAL ONE IS GONE, THE COPY ROLLS AND SAYS SO. Its numbers are
+   * faithful, so a creature whose Claw was deleted still gets a correct swing
+   * rather than a dead button.
+   */
+  static redirectCopiedAttack(activity, usageConfig) {
+    try {
+      const from = activity?.flags?.[MODULE_ID]?.multiattackFrom;
+      if (!from) return undefined;
+      const actor = activity.actor ?? activity.item?.actor ?? null;
+      const item = actor?.items?.get(from.itemId)
+        ?? actor?.items?.find(i => !MultiattackEngine.isMultiattackFeature(i)
+          && MultiattackEngine._nameMatch(i.name, from.itemName) && MultiattackEngine._isAttackItem(i));
+      const real = item?.system?.activities?.get?.(from.activityId) ?? MultiattackEngine.mainAttackActivity(item);
+      if (!real) {
+        console.warn(`${MODULE_ID} | Multiattack: "${from.itemName}" is no longer on ${actor?.name ?? "this creature"}, `
+          + `so the copy on its Multiattack feature rolls on its own.`);
+        return undefined;
+      }
+      // Off the hook's own call, so the real press is a fresh press.
+      setTimeout(() => {
+        Promise.resolve(real.use({ event: usageConfig?.event }))
+          .catch(err => console.error(`${MODULE_ID} | Multiattack: pressing the real `
+            + `${item.name} failed:`, err));
+      }, 0);
+      return false;
+    } catch (err) {
+      console.error(`${MODULE_ID} | Multiattack: could not hand a copied attack to the real item, `
+        + `so the copy rolls on its own:`, err);
+      return undefined;
+    }
+  }
+
+  static registerRedirect() {
+    Hooks.on("dnd5e.preUseActivity", (activity, usageConfig) =>
+      MultiattackEngine.redirectCopiedAttack(activity, usageConfig));
   }
 
   static _decrementTrigger(entries, triggerItem) {
@@ -1021,7 +1274,7 @@ export class MultiattackEngine {
     const content = `
       <div class="ace-ma-prompt" style="background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);border:2px solid ${ACCENT};border-radius:6px;padding:12px 14px;color:#f0e4c0;font-family:'Signika','Helvetica Neue',sans-serif;">
         <div style="display:flex;align-items:center;gap:10px;border-bottom:1px solid #4a3a28;padding-bottom:6px;margin-bottom:10px;">
-          <img src="${portrait}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid ${ACCENT};flex-shrink:0;" />
+          <img class="ace-face" src="${portrait}" style="width:40px;height:40px;border-radius:50%;border:2px solid ${ACCENT};flex-shrink:0;" />
           <div style="display:flex;flex-direction:column;min-width:0;">
             <span style="font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${actor.name}</span>
             <span style="font-size:13px;font-weight:700;color:${ACCENT};text-transform:uppercase;letter-spacing:0.5px;"><i class="fas fa-burst"></i> <i class="fas fa-hand-fist"></i> Multiattack</span>

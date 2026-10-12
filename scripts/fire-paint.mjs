@@ -326,7 +326,30 @@ export class FirePaint {
     canvas.app.view.oncontextmenu = onRight;
     window.addEventListener("keydown", onKey, true);
 
-    FirePaint._live = { cursor, onMove, onUp, onRight, onKey, priorContext, minimised, opts, acrossFt };
+    /* ── The red marks: every square this session has lit ─────────────────
+       His rule, 2026-10-07: "While the fire brush is up, paint a light red mark
+       on every 5-foot square the stamp covers. Leave it there until Escape...
+       Mark the squares, not the big rectangle as one blob... A square stamped
+       twice is still one mark, not a darker one... The red is not a tile and it
+       is not saved. Draw it on the GM client only, the same way the orange timer
+       is drawn."
+
+       ⚠️ A SET OF SQUARES, REDRAWN WHOLE. The marks are kept as square keys and
+       the one graphic is cleared and repainted from that set on every change,
+       so a square stamped twice is one entry and one fill at one alpha, and a
+       right click is simply a key leaving the set. It is a PIXI graphic on this
+       client's interface layer, like the timer and the cursor: nothing is
+       written to the scene, and the brush itself only ever runs for the GM, so
+       no player has one to see. Under the cursor so the stamp outline stays on
+       top of what it has already marked. */
+    const marks = new PIXI.Graphics();
+    marks.eventMode = "none";
+    marks.zIndex = 1150;
+    try { canvas.interface.addChild(marks); }
+    catch (_) { try { canvas.tokens.addChild(marks); } catch (_) { /* no layer */ } }
+
+    FirePaint._live = { cursor, marks, marked: new Set(), onMove, onUp, onRight, onKey,
+      priorContext, minimised, opts, acrossFt };
 
     const word = n === 1 ? "square" : `${acrossFt} foot block`;
     ui.notifications?.info(`Fire brush on: left click lights a ${word}, right click puts it out, `
@@ -347,6 +370,9 @@ export class FirePaint {
     catch (_) { /* same */ }
     try { window.removeEventListener("keydown", live.onKey, true); } catch (_) { /* same */ }
     try { live.cursor?.destroy?.(); } catch (_) { /* same */ }
+    // The red goes with the brush; the fire stays. A scene change comes through
+    // here too, from the canvasReady listener that puts the brush away.
+    try { live.marks?.destroy?.(); } catch (_) { /* same */ }
     for (const app of (live.minimised ?? [])) {
       try { app.maximize?.(); } catch (_) { /* he can restore it himself */ }
     }
@@ -360,12 +386,65 @@ export class FirePaint {
 
   static async _lightAt(point, acrossFt, opts) {
     const { FireEngine } = await import("./fire-engine.mjs");
-    await FireEngine.lightSquares(FirePaint.blockAt(point, acrossFt), opts);
+    const block = FirePaint.blockAt(point, acrossFt);
+    /* ⚠️🔴 MARKED THE INSTANT HE CLICKS (his find, 2026-10-10: "it's got to stay
+       wherever I put it until I press the Escape key"). The mark used to wait
+       for the whole light to finish - the region, the flame, and up to five
+       seconds for Sequencer to start the clip - so he clicked, moved on, and the
+       red turned up late or, if anything on the way returned nothing, never. It
+       goes down now, on the click, and stays until Escape. */
+    FirePaint._mark(block, true);
+    const region = await FireEngine.lightSquares(block, opts);
+    if (region) return;
+    // The light came back empty. Only the squares that are really not burning
+    // lose their red: if a fire region holds them, the mark is telling the truth.
+    const burning = new Set();
+    for (const r of (canvas?.scene?.regions ?? [])) {
+      for (const k of (r.flags?.[FLAG_NS]?.fire?.squares ?? [])) burning.add(k);
+    }
+    const cold = block.filter(sq => !burning.has(FirePaint.key(sq.x, sq.y)));
+    if (cold.length) {
+      FirePaint._mark(cold, false);
+      console.warn(`${LOG} | ${cold.length} square${cold.length === 1 ? "" : "s"} did not light, so `
+        + `${cold.length === 1 ? "its" : "their"} red mark was taken back off. The line above says why.`);
+    }
   }
 
   static async _douseAt(point, acrossFt) {
     const { FireEngine } = await import("./fire-engine.mjs");
-    await FireEngine.douseSquares(FirePaint.blockAt(point, acrossFt));
+    const block = FirePaint.blockAt(point, acrossFt);
+    await FireEngine.douseSquares(block);
+    FirePaint._mark(block, false);
+  }
+
+  /**
+   * Add squares to the red marks, or take them off, and repaint.
+   *
+   * ⚠️ EACH SQUARE IS ITS OWN RECTANGLE. A 10-foot stamp is four marks and a
+   * 60-foot stamp a hundred and forty-four, never one block, so a square the
+   * stamp did not land on stays unmarked and a right click on one square of a
+   * big patch takes exactly that square's red off.
+   */
+  static _mark(squares, on) {
+    const live = FirePaint._live;
+    if (!live?.marks || live.marks.destroyed) return;
+    for (const sq of squares) {
+      const key = FirePaint.key(sq.x, sq.y);
+      if (on) live.marked.add(key);
+      else live.marked.delete(key);
+    }
+    const gs = FirePaint._gs;
+    const g = live.marks;
+    g.clear();
+    // Light red: the map shows through. A faint edge per square so a patch of
+    // marks still reads as squares rather than a smear.
+    g.lineStyle(1, 0xff5a5a, 0.35);
+    for (const key of live.marked) {
+      const { x, y } = FirePaint.fromKey(key);
+      g.beginFill(0xff5a5a, 0.18);
+      g.drawRect(x + 0.5, y + 0.5, gs - 1, gs - 1);
+      g.endFill();
+    }
   }
 
   /* ═══ The slow burn: tiles reaching what they touch, doors falling open ════ */

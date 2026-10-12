@@ -399,6 +399,37 @@ export class HpDoor {
     if (before <= 0 && after > 0) await takeOffAll(actor, "unconscious");
     return { applied: true, healed: after - before, before, after };
   }
+
+  /**
+   * Healing taken back, through the same door: the GM's UNDO ALL on a heal card
+   * (his rule, 2026-10-11: "UNDO ALL is missing. Put it back."). The mirror of the
+   * damage card's UNDO ALL, which gives damage back as a correction: this is the
+   * GM rewinding the ledger, not the creature being hurt, so nothing is announced
+   * as damage and nothing may block it (no concentration, no "on damage" riders).
+   * Temporary hit points go back to what they were. A creature a heal brought up
+   * from 0 is not put back to dying or unconscious: the card's log says so.
+   *
+   * @param {Actor} actor
+   * @param {number} amount  what the heal actually landed
+   * @param {object} [o]
+   * @param {boolean} [o.temp]   it was temporary hit points
+   * @param {number} [o.tempWas] the temporary hit points before the heal
+   * @returns {Promise<{applied: boolean, before: number, after: number, why?: string}>}
+   */
+  static async takeBack(actor, amount, { temp = false, tempWas = null } = {}) {
+    if (!actor) return { applied: false, before: 0, after: 0, why: "there is no creature to take it back from" };
+    const hp = actor.system?.attributes?.hp ?? {};
+    if (!game.user?.isGM) {
+      const now = Number((temp ? hp.temp : hp.value) ?? 0);
+      return { applied: false, before: now, after: now, why: "only the GM can change this creature's hit points" };
+    }
+    const n = Math.max(0, Math.floor(Number(amount) || 0));
+    const field = temp ? "system.attributes.hp.temp" : "system.attributes.hp.value";
+    const before = Math.max(0, Number((temp ? hp.temp : hp.value) ?? 0));
+    const after = temp && Number.isFinite(Number(tempWas)) ? Math.max(0, Number(tempWas)) : Math.max(0, before - n);
+    if (after !== before) await actor.update({ [field]: after });
+    return { applied: after !== before, before, after };
+  }
 }
 
 /** Every effect on a creature that carries this status, taken off. */

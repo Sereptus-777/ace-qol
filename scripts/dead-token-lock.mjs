@@ -88,7 +88,7 @@ export class DeadTokenLock {
                     border:2px solid #d4af37;border-radius:8px;padding:16px 18px;
                     color:#f0e4c0;font-family:'Signika','Helvetica Neue',sans-serif;">
           <div style="display:flex;align-items:center;gap:14px;">
-            ${img ? `<img src="${img}" alt="" style="width:64px;height:64px;object-fit:cover;
+            ${img ? `<img class="ace-face" src="${img}" alt="" style="width:64px;height:64px;
                        border-radius:6px;border:1px solid #6b5530;flex:0 0 auto;">` : ""}
             <div>
               <div style="font-size:18px;font-weight:700;color:#ff6b3d;letter-spacing:.5px;

@@ -6,10 +6,11 @@
 //   - Portrait grid of every token on the current scene
 //   - Distance-from-caster in feet (color-coded vs spell range)
 //   - Self always selectable (Bless allows caster to bless themselves)
-//   - Out-of-range tokens dimmed and refused (since v0.7.21); rangeFt: Infinity
-//     means any range (Prismatic Wall's "creatures you designate", 2026-09-13)
+//   - Only creatures in range (his rule, 2026-10-11: "A creature the spell
+//     cannot reach is not a row"); rangeFt: Infinity means any range (Prismatic
+//     Wall's "creatures you designate", 2026-09-13)
 //   - Multi-select with a per-spell target cap
-//   - Already-targeted tokens (game.user.targets) come pre-selected
+//   - NOTHING arrives selected, and it always opens (his rule, 2026-10-11)
 //
 // Pattern mirrors HealTargetPicker but stripped of heal-specific logic.
 // Returns Promise<Actor[]> — selected actors, [] if cancelled.
@@ -19,8 +20,6 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
 // Who may be offered: the living, the dying and the dead (The One Road, Phase 4).
 import { lifeStateOf, pickable, lifeBadge } from "./road/picker-rule.mjs";
-// What the press pointed at, for a picker whose live reticle ACE has just cleared.
-import { aimAt, aimedAtPress } from "./road/aim.mjs";
 import { faceOf } from "./face.mjs";
 
 export class SpellTargetPicker {
@@ -84,12 +83,13 @@ export class SpellTargetPicker {
       candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, resolvedRange, allowSelf, kind);
     }
     console.log(`ace-qol | [picker-timing] _buildCandidates → ${candidates.length} candidates in ${Math.round(performance.now() - _tb0)}ms`);
-    // ⚠️🔴 THE LIFE RULE HIDES, THE RANGE DIMS. His words, 2026-09-16: a damage,
-    // heal or "who is safe" list shows the living, a creature at 0 hit points
-    // included, and hides the dead and the killed for good; a life-restore list
-    // shows the dead alone. A row the rule refuses is not on the list at all. A
-    // creature too far away stays on it, dimmed, with the distance on the row,
-    // because "walk six feet and you can" is worth saying.
+    // ⚠️🔴 THE LIFE RULE HIDES, AND SO DOES THE RANGE. His words, 2026-09-16: a
+    // damage, heal or "who is safe" list shows the living, a creature at 0 hit
+    // points included, and hides the dead and the killed for good; a life-restore
+    // list shows the dead alone. A row the rule refuses is not on the list at all.
+    // ⚠️ REVERSED FOR RANGE (his rule, 2026-10-11: "Out of range comes off the
+    // list. A creature the spell cannot reach is not a row. Hostile and friendly
+    // stay as they are."). It used to stay, dimmed, with its distance.
     {
       const onScene = candidates.length;
       candidates = candidates.filter(c => c.lifeOk);
@@ -104,29 +104,29 @@ export class SpellTargetPicker {
           : `${spellItem.name}: nobody living to choose on this scene.`);
         return [];
       }
+      const living = candidates.length;
+      candidates = candidates.filter(c => c.isSelf || c.inRange);
+      if (living !== candidates.length) {
+        console.log(`ace-qol | [picker] ${spellItem.name}: ${living - candidates.length} creature(s) are out of `
+          + `range (${Number.isFinite(resolvedRange) ? `${resolvedRange} feet` : "any"}) and are not on the list.`);
+      }
+      if (!candidates.length) {
+        ui.notifications?.warn(`${spellItem.name}: nobody within ${Math.round(resolvedRange)} feet to choose.`);
+        return [];
+      }
     }
 
-    // Pre-select tokens already in game.user.targets (caster convenience)
-    // ⚠️ ONLY ONE IT MAY OFFER. A targeted corpse came up selected on a heal's
-    // picker, and a selected row confirms whatever its colour says.
+    /* ⚠️🔴 NOTHING ARRIVES SELECTED, AND THE PICKER ALWAYS OPENS (his rule,
+       2026-10-11: "The portrait picker always asks. SpellTargetPicker is the one
+       door. The September 30 skip comes out: one creature already targeted is
+       not an answer, and the memory of who was targeted when the reticle was
+       cleared is not an answer either. The popup opens, and nothing on it
+       arrives already selected."). What was targeted, the caster for a
+       multi-target buff and what the press remembered all used to come up
+       selected, and with exactly one legal target the popup did not open at
+       all. Weapon attacks are not this: pickAttackTarget below keeps its one
+       creature in reach. */
     const preSelected = new Set();
-    for (const t of game.user.targets ?? []) {
-      if (candidates.find(c => c.tokenId === t.id && c.valid !== false)) preSelected.add(t.id);
-    }
-    // If nothing is explicitly pre-targeted and self-targeting is allowed,
-    // pre-select self — BUT only for MULTI-target buffs (Bless, Aid, Slow).
-    // For a SINGLE-target buff (maxTargets === 1: Greater Invisibility, Death
-    // Ward, Stoneskin, Foresight, Mind Blank, Freedom of Movement, Protection
-    // from Evil/Good, Barkskin) auto-selecting self silently biases the spell
-    // onto the caster: if the GM means to buff an adjacent ally and doesn't
-    // notice the pre-pick, the caster gets the buff instead. Single-target
-    // buffs now start with NOTHING selected, forcing one explicit pick — the
-    // caster only ever gets the effect if the GM clicks their own portrait.
-    // (v0.7.90 — Greater Invisibility "caster gets it too" report.)
-    if (preSelected.size === 0 && allowSelf && (Number(maxTargets) || 1) > 1) {
-      const selfRow = candidates.find(c => c.isSelf && c.valid !== false);
-      if (selfRow) preSelected.add(selfRow.tokenId);
-    }
 
     console.log(`ace-qol | [picker-timing] candidates ready — opening dialog (gap from here to the picker appearing = render time)`);
     // ⚠️ "ANY NUMBER OF CREATURES YOU CAN SEE" IS ANY NUMBER. The 2024 Spirit
@@ -135,66 +135,6 @@ export class SpellTargetPicker {
     const cap = kind === "exclude"
       ? Math.max(1, candidates.length)
       : Math.max(1, Number(maxTargets) || 1);
-
-    // ── A TARGET ALREADY CHOSEN IS THE ANSWER (his rule, 2026-09-30) ──────
-    //
-    //   "If a legal target is already selected, do not open the picker. Use that
-    //    target. If nobody legal is selected, open the picker."
-    //
-    // The picker used to open regardless and merely PRE-SELECT what was already
-    // targeted, so every single-target cast cost a dialog and a second click to
-    // confirm a choice that had already been made on the canvas.
-    //
-    // ⚠️ SINGLE TARGET ONLY. With room for several, what is targeted is a starting
-    // point and not the answer, so the picker still opens — he asked for a confirm
-    // button there. And it must be EXACTLY one legal target: two targeted with room
-    // for one is a genuine question.
-    //
-    // ⚠️ AND ALREADY CHARMED IS STILL LEGAL. `candidates` decides legality; nothing
-    // here filters on a condition the creature is already under, because a recast
-    // refreshes it (the condition door's own rule).
-    //
-    // ⚠️🔴 AND "ALREADY SELECTED" IS FOUNDRY'S CURRENT TARGETS, NOT ONLY ACE'S
-    // LAST PICK (his correction, 2026-09-30, after this still opened on Jeth).
-    // 0.65.0 read `game.user.targets` alone, and by the time this line runs ACE
-    // has emptied it: the pipeline's press clears the reticle for every
-    // picker-using shape before the picker opens. So the clear now remembers what
-    // it cleared (road/aim.mjs) and this asks both — the live set first, then what
-    // the press was pointing at. One read, then the memory is gone.
-    if (cap === 1 && kind !== "exclude") {
-      const legal = (tokenId) => candidates.find(c => c.tokenId === tokenId && c.valid !== false);
-      let chosen = [...(game.user.targets ?? [])].map(t => legal(t.id)).filter(Boolean);
-      let from = "targeted";
-      if (!chosen.length) {
-        const press = aimedAtPress(spellItem?.uuid ?? "");
-        const held = (press?.ids ?? []).map(id => legal(id)).filter(Boolean);
-        if (held.length) {
-          chosen = held;
-          from = `targeted when ${press.why} cleared the reticle`;
-        }
-      }
-      if (chosen.length === 1 && chosen[0].actor) {
-        console.log(`${MODULE_ID} | ${spellItem?.name}: ${chosen[0].actor.name} was already `
-          + `${from} and is a legal target, so the picker does not open.`);
-        // Put the reticle back where he had it: the cast, the animation and the
-        // card all read `game.user.targets` after this.
-        if (chosen[0].token) aimAt(chosen[0].token, { releaseOthers: false });
-        return [chosen[0].actor];
-      }
-      if (chosen.length > 1) {
-        console.log(`${MODULE_ID} | ${spellItem?.name}: ${chosen.length} creatures were ${from} `
-          + `and it takes one, so the picker opens to ask which.`);
-      }
-      // ⚠️ AND WHEN IT OPENS ANYWAY, IT SAYS WHY. This decision has now been
-      // wrong twice and both times the console showed nothing about it, so the
-      // next report starts from an answer instead of a hunt.
-      if (chosen.length !== 1) {
-        const live = [...(game.user.targets ?? [])].map(t => t?.name ?? t?.id).join(", ") || "nobody";
-        console.log(`${MODULE_ID} | ${spellItem?.name}: the picker is opening. Targeted now: ${live}. `
-          + `Legal candidates: ${candidates.filter(c => c.valid !== false).length} of ${candidates.length}. `
-          + `Wanted exactly one legal target and found ${chosen.length}.`);
-      }
-    }
 
     return await SpellTargetPicker._showDialog({
       spellItem,
@@ -467,7 +407,7 @@ export class SpellTargetPicker {
         ${headerHtml}
         <div class="ace-qol-spell-pickr-instructions">
           ${wording ? wording.instructions : `Select up to <strong>${maxTargets}</strong> target${maxTargets === 1 ? "" : "s"}.
-          Click a portrait to toggle.${Number.isFinite(rangeFt) ? " Creatures out of range are dimmed and can't be chosen." : ""}`}
+          Click a portrait to toggle.`}
         </div>
         <div class="ace-qol-spell-pickr-grid" data-max-count="${maxTargets}">
           ${rowsHtml}
@@ -570,7 +510,7 @@ export class SpellTargetPicker {
            data-actor-id="${c.actor.id}"
            title="${foundry.utils.escapeHTML(c.name)} — ${distLabel}">
         <div class="ace-qol-spell-pickr-tok-img-wrap">
-          <img src="${c.img}" alt="" class="ace-qol-spell-pickr-tok-img" onerror="this.style.display='none'">
+          <img src="${c.img}" alt="" class="ace-qol-spell-pickr-tok-img ace-face" onerror="this.style.display='none'">
           ${c.isSelf ? `<div class="ace-qol-spell-pickr-tok-self-badge">SELF</div>` : ""}
           ${deadBadge}
         </div>

@@ -95,31 +95,29 @@ console.log("1. ALREADY SELECTED MEANS FOUNDRY'S CURRENT TARGETS");
     /rememberAim\(why, key\);/.test(pipe) && /rememberAim\(why, key\);/.test(auto)
     && /key: activity\?\.item\?\.uuid \?\? "",/.test(pipe),
     "one press, one memory");
-  check("and the picker asks for its own",
-    /aimedAtPress\(spellItem\?\.uuid \?\? ""\)/.test(pick), "not somebody else's press");
-  check("when it opens anyway it says why",
-    /the picker is opening\. Targeted now:/.test(pick),
-    "this decision has been wrong twice with nothing in the console");
-
-  check("the picker asks the live reticle first",
-    /let chosen = \[\.\.\.\(game\.user\.targets \?\? \[\]\)\]\.map\(t => legal\(t\.id\)\)\.filter\(Boolean\);/.test(pick),
-    "whatever is targeted now");
-  check("then what the press was pointing at",
-    /const press = aimedAtPress\(spellItem\?\.uuid \?\? ""\);/.test(pick)
-    && /const held = \(press\?\.ids \?\? \[\]\)\.map\(id => legal\(id\)\)\.filter\(Boolean\);/.test(pick),
-    "the set ACE emptied");
-  check("one legal target either way means no picker at all",
-    /if \(chosen\.length === 1 && chosen\[0\]\.actor\)/.test(pick)
-    && /return \[chosen\[0\]\.actor\];/.test(pick),
-    "that target is the cast");
-  check("and the reticle is put back where he had it",
-    /if \(chosen\[0\]\.token\) aimAt\(chosen\[0\]\.token, \{ releaseOthers: false \}\);/.test(pick),
-    "the cast, the clip and the card all read it after this");
-  check("two targeted with room for one is still a question",
-    /if \(chosen\.length > 1\)/.test(pick), "the picker opens to ask which");
-  check("and the snapshot only counts for a LEGAL candidate",
-    /const legal = \(tokenId\) => candidates\.find\(c => c\.tokenId === tokenId && c\.valid !== false\);/.test(pick),
-    "out of range, dead, or gone → the picker opens");
+  // ⚠️ REVERSED 2026-10-11 (his rule: "The portrait picker always asks.
+  // SpellTargetPicker is the one door. The September 30 skip comes out: one
+  // creature already targeted is not an answer, and the memory of who was
+  // targeted when the reticle was cleared is not an answer either. The popup
+  // opens, and nothing on it arrives already selected."). The memory above is
+  // still kept; the picker no longer reads it, or the live reticle.
+  check("the picker does not read what the press remembered",
+    !/aimedAtPress/.test(pick), "not an answer");
+  check("nor what is targeted now", !/game\.user\.targets/.test(pick), "not an answer either");
+  check("so no target already chosen stands it down", !/return \[chosen\[0\]\.actor\];/.test(pick), "it opens");
+  check("and nothing arrives selected", /const preSelected = new Set\(\);/.test(pick) && !/preSelected\.add\(/.test(pick),
+    "every time");
+  check("out of range is not a row", /candidates = candidates\.filter\(c => c\.isSelf \|\| c\.inRange\);/.test(pick),
+    "hostile and friendly stay as they are");
+  {
+    const heal = read("scripts/heal-target-picker.mjs");
+    check("the heal picker does the same: nothing lit, the caster included",
+      /const preSelected = new Set\(\);/.test(heal) && !/preSelected\.add\(/.test(heal), "Cure Wounds asks, every time");
+    check("and a creature the heal cannot reach is not a row",
+      /distFt > classification\.rangeFt \+ 0\.01\) continue;/.test(heal), "off the list");
+  }
+  check("a weapon attack is not this: one creature in reach still goes without a popup",
+    /if \(reachable\.length === 1\) \{/.test(pick), "pickAttackTarget");
 
   // Clicking a portrait on a one-target picker is still the cast (0.65.0).
   check("with one target the click is the cast",
@@ -174,10 +172,13 @@ console.log("\n2. THE ROW READS \"Cast Charm Person\", NEVER \"Save\"");
 /* ══ 3. ONE CLIP ON THE TOKEN ═════════════════════════════════════════════ */
 console.log("\n3. TWO SOURCES, ONE CHARMED, ONE CLIP");
 {
-  // ACE's own half already obeyed this: the hearts are drawn from the token's
-  // STATUS set and keyed on it, so a second charmed effect changes nothing.
-  check("ACE draws the hearts from the status set, not per effect",
-    /if \(has\("charmed"\)\) \{/.test(vis), "one charmed status however many sources");
+  // ⚠️ 2026-10-12, his rule: "He wants the JB2A hearts going around the token. He
+  // does not want the hearts ACE draws on the body." Charmed is left to JB2A, kept
+  // in the list that hides Foundry's square, and ACE draws nothing for it.
+  check("ACE no longer draws charmed: no hearts, no coat, the square still hidden",
+    !/if \(has\("charmed"\)\) \{/.test(vis) && !/charmed:\s*\{ tint/.test(vis)
+    && /export const LEFT_TO_JB2A = new Set\(\["charmed"\]\);/.test(vis)
+    && /"frightened", "blinded", "charmed", "unconscious"/.test(vis), "the JB2A hearts are the picture");
   check("and what it built is keyed on that set, so a second source is a no-op",
     /const key = active\.join\("\|"\);/.test(vis)
     && /if \(existing\?\.key === key && existing\.token === token && !existing\.cont\?\.destroyed\) return;/.test(vis),
@@ -189,8 +190,11 @@ console.log("\n3. TWO SOURCES, ONE CHARMED, ONE CLIP");
   // Automated Animations is the other clip. It plays per EFFECT CREATED.
   check("AA is switched off on an ACE condition ACE already draws",
     /const key = data\?\.flags\?\.\[MODULE_ID\]\?\.conditionKey \?\? effect\?\.flags\?\.\[MODULE_ID\]\?\.conditionKey;/.test(main)
-    && /const drawn = statuses\.filter\(s => BODY_VISUAL_STATUSES\.has\(s\)\);/.test(main),
+    && /const drawn = statuses\.filter\(s => aceDrawsOnBody\(s\)\);/.test(main),
     "the body IS the icon");
+  check("and charmed keeps AA's own hearts, one clip however many sources (his rule, 09-30 and 10-12)",
+    /const jb2a = statuses\.filter\(s => LEFT_TO_JB2A\.has\(s\)\);/.test(main)
+    && /if \(!already\) return;\s+\/\/ its first source: AA plays it/.test(main), "a second charm starts no second clip");
   check("in AA's own words, before the effect exists",
     /effect\.updateSource\(\{ "flags\.autoanimations": \{\s*\n\s*isEnabled: false, isCustomized: false, fromAmmo: false, version: 5,/.test(main),
     "so AA never sees it");
@@ -198,7 +202,7 @@ console.log("\n3. TWO SOURCES, ONE CHARMED, ONE CLIP");
     /if \(!key\) return;\s+\/\/ not one of ACE's conditions/.test(main),
     "somebody else's effect is not ours to take over");
   check("and a condition ACE does not draw is left alone",
-    /if \(!drawn\.length\) return;\s+\/\/ ACE draws nothing for this one/.test(main),
+    /if \(!drawn\.length\) \{/.test(main) && /if \(!already\) return;/.test(main),
     "no blanket suppression");
   check("a charm that refreshes creates nothing, so there is nothing to play",
     /refreshed/.test(read("scripts/condition-library.mjs")), "0.63.0, same caster");
@@ -317,16 +321,22 @@ console.log("\n6. TWO SOURCES, ONE CHARMED, NEITHER DELETED");
     /\/\(\^\|\[\.\\-_\/\]\)condition\(\[\.\\-_\/\]\|\$\)\/i\.test/.test(anim),
     "the on-token picture, not a cast flourish");
   check("and only when ACE really draws that condition",
-    /conditionStatuses\(key\)\.filter\(s => BODY_VISUAL_STATUSES\.has\(s\)\)/.test(anim),
-    "Bless and Bane keep their own clip");
+    /conditionStatuses\(key\)\.filter\(s => aceDrawsOnBody\(s\)\)/.test(anim),
+    "Bless and Bane keep their own clip, and so does Charm Person now (10-12)");
   check("the spell's landing condition reaches the animator",
     /entry: ctx\.entry \?\? null/.test(helper)
     && /export async function playCuratedAnimation\(\{ casterToken, item, targets = \[\], entry = null \} = \{\}\)/.test(anim),
     "it cannot answer without the entry");
   check("a key's statuses are read from the library, never a second list",
     /export function conditionStatuses\(key\)/.test(lib), "charm_person puts on charmed");
-  check("a cast flourish is still played",
-    /A cast flourish would still play/.test(anim), "his words");
+  // ⚠️ 2026-10-11: the cast flourish is gone (his rule: one clip per cast,
+  // its owner's), so the console no longer promises one.
+  // ⚠️ 2026-10-11: the flourish fires nowhere on its own any more, so this is
+  // the one place it is asked for (his words: "Charm Person, and any spell whose
+  // only clip is a condition badge, still gets a flourish at the cast").
+  check("a cast flourish is still played, in the badge's place",
+    /The cast flourish plays instead\./.test(anim) && /return AceFX\.castFlourish\(casterToken, item\);/.test(anim),
+    "his words, 2026-09-30 and 2026-10-11");
   check("and an unreadable answer plays, rather than silently playing nothing",
     /return null;\s+\/\/ unreadable: play it, rather than silently play nothing/.test(anim),
     "silence is the worse failure here");
@@ -347,7 +357,7 @@ console.log("\n6. TWO SOURCES, ONE CHARMED, NEITHER DELETED");
   // entry, got null, and returned — so AA played its badge on the token.
   check("an EFFECT that puts on a condition ACE draws gets no AA picture",
     /if \(data\?\.activeEffect === true \|\| subject\?\.documentName === "ActiveEffect"\) \{/.test(anim)
-    && /const drawn = statuses\.filter\(s => BODY_VISUAL_STATUSES\.has\(s\)\);/.test(anim),
+    && /const drawn = statuses\.filter\(s => aceDrawsOnBody\(s\)\);/.test(anim),
     "not on the effect");
   check("whoever created it and whatever record AA chose",
     /it puts on \$\{drawn\.join\(", "\)\}, which ACE draws on/.test(anim),
@@ -355,9 +365,9 @@ console.log("\n6. TWO SOURCES, ONE CHARMED, NEITHER DELETED");
   check("the item's use is refused too, for a condition badge",
     /const drawn = aceAlreadyDrawsThis\(entry, anim\?\.path\);/.test(anim),
     "not on the item use");
-  check("and Bless and Bane are left alone",
-    /if \(!drawn\.length\) return;/.test(anim),
-    "they carry no body-visual status, so nothing is stood down for them");
+  check("and Bless and Bane are left alone, and a first charm keeps AA's hearts",
+    /if \(!jb2a\.length \|\| !others\.some\(e => jb2a\.some\(s => e\.statuses\?\.has\?\.\(s\)\)\)\) return;/.test(anim),
+    "nothing is stood down for them; only a second charm on one creature");
 }
 
 /* ══ 7. THE ORDER: DICE, CONDITION, CARD, THEN THE PICTURE ════════════════ */
@@ -991,11 +1001,14 @@ console.log("\n17. THE PORTRAIT, AND THE POST-HIT RESULT");
   // and two ACE cards showing one creature two different shapes is the kind of
   // difference a table notices.
   check("the damage card draws the save card's portrait box",
-    /class="ace-qol-dmg-tgt-img ace-qol-save-portrait"/.test(dmg), "same face, same box");
-  check("and that box is square and not cropped",
+    /class="ace-qol-dmg-tgt-img ace-qol-save-portrait ace-face"/.test(dmg), "same face, same box");
+  // ⚠️ REVERSED 2026-10-11 (his rule: "Every portrait on every card is framed from the
+  // top of the picture down... The box fills with whatever fits under that."). The
+  // 09-29 box stays; it fills now, anchored at the top, instead of showing it whole.
+  check("and that box is square, filled from the top",
     /\.ace-qol-save-portrait \{/.test(css)
     && /border-radius: 8px !important;/.test(css)
-    && /object-fit: contain !important;/.test(css), "no circle");
+    && /img\.ace-face \{ object-fit: cover !important; object-position: 50% 0 !important; \}/.test(css), "no circle, the head in the frame");
   check("the old class stays, because it is the click handle",
     /row\.querySelector\("\.ace-qol-dmg-tgt-img"\)/.test(read("scripts/damage-applicator.mjs")),
     "it selects and pans to the token");

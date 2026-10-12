@@ -237,7 +237,7 @@ export class UnifiedSpellPicker {
         const badge = c.isNPC ? `<span style="${BADGE_NPC}">NPC</span>` : `<span style="${BADGE_PC}">PC</span>`;
         return `
           <div class="ace-pipe-row" data-token-id="${c.tokenId}" style="${rowStyle}">
-            <img class="ace-pipe-portrait" width="56" height="56" src="${c.img}" alt="${c.name}" style="${PORTRAIT_STYLE}" />
+            <img class="ace-pipe-portrait ace-face" width="56" height="56" src="${c.img}" alt="${c.name}" style="${PORTRAIT_STYLE}" />
             <div style="${INFO_STYLE}">
               <div style="${NAME_STYLE}">${c.name} ${badge}</div>
               <div style="${META_STYLE}">
@@ -389,7 +389,7 @@ export class UnifiedSpellPicker {
         const badge = c.isNPC ? `<span style="${STYLES.BADGE_NPC}">NPC</span>` : `<span style="${STYLES.BADGE_PC}">PC</span>`;
         return `
           <div class="ace-pipe-row" data-token-id="${c.tokenId}" style="${rowStyle};cursor:pointer;">
-            <img width="56" height="56" src="${c.img}" alt="${c.name}" style="${STYLES.PORTRAIT}" />
+            <img class="ace-face" width="56" height="56" src="${c.img}" alt="${c.name}" style="${STYLES.PORTRAIT}" />
             <div style="${STYLES.INFO}">
               <div style="${STYLES.NAME}">${c.name} ${badge}</div>
               <div style="${STYLES.META}">
@@ -555,7 +555,7 @@ export class UnifiedSpellPicker {
           <div class="ace-pipe-tile" data-token-id="${c.tokenId}" style="${tileStyle}">
             ${selfBadge}
             ${checkBadge}
-            <img src="${c.img}" alt="${c.name}" style="${PORTRAIT}" />
+            <img class="ace-face" src="${c.img}" alt="${c.name}" style="${PORTRAIT}" />
             <div style="${NAME}">${c.name}</div>
             <div style="${disp.style}">${disp.text}</div>
             <div style="${dist.style}">${dist.text}</div>

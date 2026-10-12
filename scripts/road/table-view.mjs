@@ -21,6 +21,16 @@
 //    creature's. The whole table sees a party member's formula and DC, the die,
 //    the word, and the damage that landed. Nothing else."
 //
+//   and from the live test that afternoon, what "formula" means:
+//
+//   "A party member's save row is the die and PASS or FAIL. Jeth and the Steel
+//    Defender are showing Dex, proficiency, cover, and 9 + 11 = 20 on the
+//    player's screen. That is not the spell. Chudd's DC 17 stays."
+//
+//   So a party member's formula is the spell's: its DC and its damage dice. The
+//   arithmetic of anybody's d20 (an attack, a save, a check, a contest) is the
+//   GM's, a party member's included.
+//
 // ⚠️🔴 WHY IT CANNOT LIVE ON THE MESSAGE AT ALL. PROVEN from Foundry 13.351's
 // own server code, 2026-10-11:
 //   - every ChatMessage, WHISPERS INCLUDED, is dumped to every client when the
@@ -37,10 +47,11 @@
 // So this is the one function. It runs on the client that posts or changes an
 // ACE card, BEFORE anything leaves that client (preCreate/preUpdateChatMessage;
 // client-backend.mjs sends whatever those hooks leave on the document):
-//   1. a party member's formula and DC stay on the card: the whole table reads
-//      them;
-//   2. every other marked part of the HTML (any AC, any hit points, a creature's
-//      number, a trap's, the GM's tools) is cut out and replaced by an empty slot;
+//   1. a party member's DC and damage formula stay on the card: the whole table
+//      reads them;
+//   2. every other marked part of the HTML (any d20's bonus and total, any AC,
+//      any hit points, a creature's number, a trap's, the GM's tools) is cut out
+//      and replaced by an empty slot;
 //   3. every secret field in the flags is cut out the same way, by the same rule;
 //   4. the dice rolled stay, the arithmetic around them does not;
 //   5. what was cut goes, by socket, ONLY to the GM. The GM's screen puts it back
@@ -76,22 +87,28 @@ const GM_CLASSES = Object.freeze([
 ]);
 
 /**
- * A number that belongs to one creature. These say whose they are
- * (data-bonus-actor); one that names nobody is the GM's.
+ * The arithmetic of a d20: an attack's, a save's, a check's, a contest's. The
+ * GM's, whoever rolled it (his rule, 2026-10-11: "A party member's save row is
+ * the die and PASS or FAIL... That is not the spell."). They still say whose
+ * they are (data-bonus-actor); nothing here asks.
  */
-const OWNER_CLASSES = Object.freeze([
+const D20_CLASSES = Object.freeze([
   "ace-qol-bonus",            // bonusSpan: the arithmetic of a roll
   "ace-qol-formula-pill",     // "Dex +5 | Prof +3 = 8"
 ]);
 
 /**
- * A modifier chip on a damage or attack card. One that names nobody is the
- * card's own creature's: the attacker's +4 STR on the attacker's card.
+ * A modifier chip on a damage card: the damage formula. One that names nobody
+ * is the card's own creature's: the attacker's +4 STR on the attacker's card.
+ * A chip on an attack card sits inside its d20 wrapper and goes with it.
  */
 const CHIP_CLASSES = Object.freeze([
   "ace-qol-mod-labeled",      // +4 STR, PROF, MAGIC
   "ace-qol-mod-chip",
   "ace-qol-mod-plain",        // an unlabelled flat modifier is still a bonus
+  // A save's own named sum (his rule, 2026-10-12): the table's for a party
+  // member's own save, the GM's for a creature's.
+  "ace-qol-save-bonus",
 ]);
 
 /**
@@ -141,7 +158,10 @@ const DICE_FLAG_KEYS = Object.freeze(new Set([
  * repeat save), else whoever made the card (a damage part's total).
  */
 const TOTAL_FLAG_KEYS = Object.freeze(new Set(["total"]));
-/** The arithmetic of a roll: the creature that rolled it, the nearest one named. */
+/**
+ * The arithmetic of a d20: the GM's, a party member's included (his rule,
+ * 2026-10-11: "A party member's save row is the die and PASS or FAIL").
+ */
 const ROLL_FLAG_KEYS = Object.freeze(new Set([
   // a bonus, a modifier, the parts of a roll
   "saveMod", "saveModBase", "saveModBonus", "coverBonus", "saveBonuses", "saveBonusUsed",
@@ -180,21 +200,24 @@ function attrsOf(text) {
 export function audienceOf(attrs, cardActor = null) {
   const cls = new Set(String(attrs.class ?? "").split(/\s+/).filter(Boolean));
   if (attrs["data-ace-secret"] === "gm") return "gm";
-  if (attrs["data-ace-secret-owner"]) return attrs["data-ace-secret-owner"];
+  // A creature's own roll, marked by Forge's trap and disarm rows: a d20's
+  // bonus and total, the GM's whoever it is.
+  if (attrs["data-ace-secret-owner"]) return "gm";
   if (GM_CLASSES.some(c => cls.has(c))) return "gm";
   // An AC is the GM's, a party member's included (his rule, 2026-10-11: "A player character's AC and hit points stay on my screen").
   if (cls.has("ace-qol-ac")) return "gm";
   // A DC is the caster's.
   if (cls.has("ace-qol-dc")) return attrs["data-dc-owner"] || "gm";
-  if (OWNER_CLASSES.some(c => cls.has(c))) return attrs["data-bonus-actor"] || "gm";
+  if (D20_CLASSES.some(c => cls.has(c))) return "gm";
   if (CHIP_CLASSES.some(c => cls.has(c))) return attrs["data-bonus-actor"] || cardActor || "gm";
   return null;
 }
 
 /**
- * THE RULE. A number that names one of the party here (its formula, its DC) is
- * the table's (null); every other number is the GM's. An AC and hit points never
- * get here as anybody's: they are the GM's before this is asked.
+ * THE RULE. A number that names one of the party here (its spell's DC, its
+ * damage formula) is the table's (null); every other number is the GM's. A d20's
+ * arithmetic, an AC and hit points never get here as anybody's: they are the
+ * GM's before this is asked.
  */
 export function tableOrGM(aud, isTable = NOBODY) {
   if (aud === null || aud === undefined) return null;
@@ -283,7 +306,7 @@ const isLeaf = (o) => isPlain(o) && typeof o.__aud === "string" && "v" in o;
  */
 export function splitFlags(value, card = "gm", { isTable = NOBODY, ns = null } = {}) {
   const fallback = card || "gm";
-  return splitIn(value, { roller: fallback, maker: fallback, caster: "gm", depth: 0, isTable, ns });
+  return splitIn(value, { maker: fallback, caster: "gm", depth: 0, isTable, ns });
 }
 
 function splitIn(value, ctx) {
@@ -299,8 +322,8 @@ function splitIn(value, ctx) {
     return { pub, sec: any ? { __arr: arr } : undefined };
   }
   if (isPlain(value)) {
-    // The creatures this object names: a row's own creature rolled what is in
-    // it, and the creature at the top of the card is the one who made it.
+    // The creatures this object names, and the creature at the top of the card,
+    // the one who made it.
     const actorId = named(value.actorId);
     const target = named(value.targetActorId) ?? named(value.targetId);
     const top = ctx.depth === 0;
@@ -309,15 +332,14 @@ function splitIn(value, ctx) {
     const namesCaster = "casterActorId" in value;
     const caster = namesCaster ? (named(value.casterActorId) ?? "gm") : (top ? (actorId ?? "gm") : ctx.caster);
     const maker = namesCaster ? (named(value.casterActorId) ?? "gm") : (top ? (actorId ?? ctx.maker) : ctx.maker);
-    const roller = actorId ?? target ?? ctx.roller;
     const own = actorId ?? target;
-    const inner = { ...ctx, roller, maker, caster, depth: ctx.depth + 1 };
+    const inner = { ...ctx, maker, caster, depth: ctx.depth + 1 };
     const pub = {};
     const sec = {};
     let any = false;
     for (const [k, v] of Object.entries(value)) {
       if (!k.startsWith("-=") && SECRET_FLAG_KEYS.has(k)) {
-        const whose = flagWhose(k, v, { ns: ctx.ns, roller, maker, caster, own });
+        const whose = flagWhose(k, { ns: ctx.ns, maker, caster, own });
         if (tableOrGM(whose, ctx.isTable) === null) { pub[k] = v; continue; }
         sec[k] = { __aud: "gm", v };
         any = true;
@@ -333,17 +355,16 @@ function splitIn(value, ctx) {
 }
 
 /** Whose one secret field is, by what it measures. */
-function flagWhose(key, value, { ns, roller, maker, caster, own }) {
-  if (GM_FLAG_KEYS.has(key)) return "gm";
-  // Forge's DCs are a trap's or a hidden door's, whoever stepped on it.
-  if (DC_FLAG_KEYS.has(key)) return ns === "ace-artificer" ? "gm" : caster;
-  if (DEFENCE_FLAG_KEYS.has(key)) return "gm";
-  // A damage row's "modifier" is its target's resistance word, a defence; a
-  // repeat save's is the saver's bonus, a formula.
-  if (key === "modifier" && typeof value !== "number") return "gm";
+function flagWhose(key, { ns, maker, caster, own }) {
+  // Forge's numbers are a trap's, a hidden door's, or a d20 rolled against one.
+  if (ns === "ace-artificer") return "gm";
+  if (GM_FLAG_KEYS.has(key) || DEFENCE_FLAG_KEYS.has(key) || ROLL_FLAG_KEYS.has(key)) return "gm";
+  if (DC_FLAG_KEYS.has(key)) return caster;
   if (DICE_FLAG_KEYS.has(key)) return maker;
-  if (TOTAL_FLAG_KEYS.has(key)) return own ?? maker;
-  return roller;
+  // A total in an object that names its own creature is that creature's d20 (a
+  // contest side, a repeat save): the GM's. One in a damage part is the dice.
+  if (TOTAL_FLAG_KEYS.has(key)) return own ? "gm" : maker;
+  return "gm";
 }
 
 /** Lay an overlay back over flags (a copy; neither input changes). */

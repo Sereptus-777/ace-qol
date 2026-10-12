@@ -6,7 +6,10 @@
 // table sees them. A creature's bonus, DC, AC, and hit points stay on my screen
 // only." And after that: "A player character's AC and hit points stay on my
 // screen, same as a creature's. The whole table sees a party member's formula
-// and DC, the die, the word, and the damage that landed. Nothing else." These
+// and DC, the die, the word, and the damage that landed. Nothing else." And from
+// the live test: "A party member's save row is the die and PASS or FAIL... That
+// is not the spell. Chudd's DC 17 stays." A party member's formula is the
+// spell's: its DC and its damage dice; any d20's arithmetic is the GM's. These
 // pin the split that runs before a card leaves the client that posts it
 // (scripts/road/table-view.mjs): what stays, what is cut, that only the GM gets
 // it back, and that putting it back gives exactly what was cut.
@@ -72,21 +75,27 @@ console.log("\nTHE HTML: A CREATURE'S NUMBER IS NOT SENT");
   ], ["lamia", "gm", "gm"]);
 }
 
-console.log("\nA PLAYER CHARACTER'S FORMULA AND DC ARE THE TABLE'S");
+console.log("\nA PARTY MEMBER'S SPELL IS THE TABLE'S; ANYBODY'S D20 MATH IS THE GM'S");
 {
   n = 0;
-  // Kirsten casts: her DC and her formula stay on the card (his rule, 2026-10-11).
+  // Kirsten casts: her DC stays on the card; her save pill is a d20's, the GM's.
   const html = `<span class="ace-qol-dc" data-dc-owner="kirsten">DC 15</span>`
     + `<span class="ace-qol-formula-pill" data-bonus-actor="kirsten">Dex +5 | Prof +3 = 8</span>`
     + `<span class="ace-qol-bonus" data-bonus-actor="ogre">+2 = 9</span>`
     + `<span class="ace-qol-ac" data-ac-actor="jeth">AC 17</span>`;
   const r = splitHtml(html, { makeId: ids, isTable });
   check("her DC stays on the card", r.html.includes("DC 15"), true);
-  check("so does her formula", r.html.includes("Dex +5 | Prof +3 = 8"), true);
+  check("her save bonus does not: a d20's arithmetic is the GM's, hers included",
+    r.html.includes("Dex +5 | Prof +3 = 8"), false);
   check("Jeth's AC does not: a party member's AC is the GM's like anybody's", r.html.includes("AC 17"), false);
-  check("the ogre's bonus and Jeth's AC are what is cut", r.slots.map(s => s.html),
-    [`<span class="ace-qol-bonus" data-bonus-actor="ogre">+2 = 9</span>`,
+  check("her pill, the ogre's bonus and Jeth's AC are what is cut", r.slots.map(s => s.html),
+    [`<span class="ace-qol-formula-pill" data-bonus-actor="kirsten">Dex +5 | Prof +3 = 8</span>`,
+      `<span class="ace-qol-bonus" data-bonus-actor="ogre">+2 = 9</span>`,
       `<span class="ace-qol-ac" data-ac-actor="jeth">AC 17</span>`]);
+  check("Jeth's 9 + 11 = 20 on his own save row is the GM's",
+    splitHtml(`<span class="ace-qol-bonus" data-bonus-actor="jeth"> + 11 = 20</span>`, { makeId: ids, isTable }).slots.length, 1);
+  check("so is a Forge row's bonus marked as a party member's",
+    splitHtml(`<span data-ace-secret-owner="kirsten">+5 = 19</span>`, { makeId: ids, isTable }).slots.length, 1);
   check("the rule, in one line",
     [tableOrGM("kirsten", isTable), tableOrGM("ogre", isTable), tableOrGM("gm", isTable), tableOrGM(null, isTable)],
     [null, "gm", "gm", null]);
@@ -96,10 +105,11 @@ console.log("\nA PLAYER CHARACTER'S FORMULA AND DC ARE THE TABLE'S");
   const html = `<span class="ace-qol-mod-labeled">+4 STR</span><span class="ace-qol-mod-plain">+2</span>`
     + `<span class="ace-qol-formula-pill" data-bonus-actor="pc">Dex +5 | Prof +3 = 8</span>`;
   const r = splitHtml(html, { cardActor: "ogre", makeId: ids, isTable });
-  check("a chip that names nobody is the card's creature's: the ogre's are cut, the pc's pill stays",
-    r.slots.map(s => s.html), [`<span class="ace-qol-mod-labeled">+4 STR</span>`, `<span class="ace-qol-mod-plain">+2</span>`]);
+  check("a damage chip that names nobody is the card's creature's: the ogre's are cut, and any save pill",
+    r.slots.map(s => s.html), [`<span class="ace-qol-mod-labeled">+4 STR</span>`, `<span class="ace-qol-mod-plain">+2</span>`,
+      `<span class="ace-qol-formula-pill" data-bonus-actor="pc">Dex +5 | Prof +3 = 8</span>`]);
   const hers = splitHtml(`<span class="ace-qol-mod-labeled">+4 STR</span>`, { cardActor: "kirsten", makeId: ids, isTable });
-  check("on Kirsten's own card her +4 STR stays", hers.slots.length, 0);
+  check("on Kirsten's own damage card her +4 STR stays: it is her damage formula", hers.slots.length, 0);
 }
 {
   n = 0;
@@ -130,8 +140,8 @@ console.log("\nA PARTY MEMBER'S AC AND HIT POINTS ARE THE GM'S, IN THE FLAGS TOO
     { actorId: "ogre", targetId: "jeth", damageResults: [{ targetId: "jeth", totalFinal: 7 }] });
   const hers = splitFlags({ type: "repeatingSave", actorId: "jeth", casterActorId: "kirsten", dc: 15, modifier: 4, total: 16 },
     "jeth", { isTable });
-  check("a party member's save bonus and a party caster's DC stay", hers.pub,
-    { type: "repeatingSave", actorId: "jeth", casterActorId: "kirsten", dc: 15, modifier: 4, total: 16 });
+  check("a party caster's DC stays; a party member's save bonus and total do not", hers.pub,
+    { type: "repeatingSave", actorId: "jeth", casterActorId: "kirsten", dc: 15 });
 }
 
 console.log("\nTHE FLAGS: A NUMBER IN THE FLAGS IS ON THE TABLE");
@@ -145,9 +155,9 @@ console.log("\nTHE FLAGS: A NUMBER IN THE FLAGS IS ON THE TABLE");
     damageResults: [{ totalFinal: 12, components: [{ type: "fire", final: 12, raw: 24, formula: "8d6" }] }],
   };
   const { pub, sec } = splitFlags(flags, "gm", { isTable });
-  check("what is sent keeps the die, the word, the damage that landed, and the pc's own total", pub, {
+  check("what is sent keeps the die, the word and the damage that landed, for a party member too", pub, {
     type: "saveResults", castId: "c1",
-    allResults: [{ actorId: "ogre", passed: false, dieResult: 7 }, { actorId: "pc", passed: true, dieResult: 16, saveTotal: 21 }],
+    allResults: [{ actorId: "ogre", passed: false, dieResult: 7 }, { actorId: "pc", passed: true, dieResult: 16 }],
     damageResults: [{ totalFinal: 12, components: [{ type: "fire", final: 12 }] }],
   });
   check("laying the overlay back gives every number again", mergeOverlay(pub, sec), flags);
@@ -174,8 +184,8 @@ console.log("\nA NUMBER IS WHOSE IT MEASURES, NOT WHOSE CARD IT IS ON");
   // Her attack card names the ogre at the top: the AC there is the ogre's, not hers.
   const flags = { actorId: "kirsten", targetId: "ogre", attackTotal: 19, ac: 15, currentHP: 59 };
   const { pub } = splitFlags(flags, "kirsten", { isTable });
-  check("on her attack card the ogre's AC and hit points are cut, her total stays",
-    pub, { actorId: "kirsten", targetId: "ogre", attackTotal: 19 });
+  check("on her attack card the ogre's AC and hit points are cut, and her own total",
+    pub, { actorId: "kirsten", targetId: "ogre" });
   const lone = splitFlags({ actorId: "kirsten", ac: 15 }, "kirsten", { isTable });
   check("an AC at the top of her card that names no target is the GM's, never hers", lone.pub, { actorId: "kirsten" });
 }
@@ -183,8 +193,8 @@ console.log("\nA NUMBER IS WHOSE IT MEASURES, NOT WHOSE CARD IT IS ON");
   // Lamia (a creature) casts at Jeth: his total is his, the DC on his row is Lamia's.
   const flags = { actorId: "lamia", saveDC: 13, allResults: [{ actorId: "jeth", saveTotal: 12, saveDC: 13 }] };
   const { pub } = splitFlags(flags, "lamia", { isTable });
-  check("Jeth's total stays, Lamia's DC is cut wherever it sits",
-    pub, { actorId: "lamia", allResults: [{ actorId: "jeth", saveTotal: 12 }] });
+  check("Lamia's DC is cut wherever it sits, and Jeth's total",
+    pub, { actorId: "lamia", allResults: [{ actorId: "jeth" }] });
 }
 {
   // Kirsten casts at the ogre: her DC is the table's, the ogre's save total is the GM's.
@@ -208,8 +218,10 @@ console.log("\nA CARD NAMED FOR WHOEVER SAVES STILL CARRIES THE CASTER'S NUMBERS
   const flags = { type: "pcSavePrompt", actorId: "jeth", casterActorId: "lamia", saveDC: 13,
     saveBonuses: ["1d4"], recipe: { decidedBy: { dc: 13 }, onFail: [{ formula: "8d6" }] } };
   const { pub } = splitFlags(flags, "jeth", { isTable });
-  check("Lamia's DC and her damage formula are cut, Jeth's own Bless stays",
-    pub, { type: "pcSavePrompt", actorId: "jeth", casterActorId: "lamia", saveBonuses: ["1d4"],
+  // Jeth's Bless goes too: his own screen reads it back from his sheet when he
+  // rolls (save-engine _rollPcSave), as it already re-measures cover.
+  check("Lamia's DC, her damage formula and Jeth's save bonuses are cut",
+    pub, { type: "pcSavePrompt", actorId: "jeth", casterActorId: "lamia",
       recipe: { decidedBy: {}, onFail: [{}] } });
   const hers = splitFlags({ ...flags, casterActorId: "kirsten" }, "jeth", { isTable });
   check("when Kirsten cast it, her DC stays for the table", hers.pub.saveDC, 13);
@@ -219,8 +231,8 @@ console.log("\nA CARD NAMED FOR WHOEVER SAVES STILL CARRIES THE CASTER'S NUMBERS
   // names its caster's field and leaves it empty has a caster nobody recorded.
   const flags = { type: "repeatingSave", actorId: "jeth", casterActorId: null, dc: 14, total: 11, modifier: 3 };
   const { pub } = splitFlags(flags, "jeth", { isTable });
-  check("the DC is cut, Jeth's own roll stays", pub,
-    { type: "repeatingSave", actorId: "jeth", casterActorId: null, total: 11, modifier: 3 });
+  check("the DC is cut, and Jeth's own bonus and total", pub,
+    { type: "repeatingSave", actorId: "jeth", casterActorId: null });
   // A grapple card says nothing about the grappler: the speaker is not the DC's owner.
   check("a DC on a card with no creature of its own is the GM's",
     splitFlags({ type: "breakFree", passed: false, dc: 13 }, "jeth", { isTable }).pub, { type: "breakFree", passed: false });
@@ -237,9 +249,9 @@ console.log("\nA CARD NAMED FOR WHOEVER SAVES STILL CARRIES THE CASTER'S NUMBERS
   check("Kirsten's own 8d6 stays on the ogre's row; the ogre's hit points do not", hers.pub,
     { actorId: "kirsten", damageResults: [{ targetId: "ogre",
       components: [{ type: "fire", formula: "8d6", total: 28, raw: 28, final: 14 }] }] });
-  check("a contest side's total is its own creature's",
+  check("a contest's totals are the GM's, both sides: the table sees who won",
     splitFlags({ actorId: "kirsten", sides: [{ actorId: "kirsten", total: 17 }, { actorId: "ogre", total: 12 }] },
-      "kirsten", { isTable }).pub.sides, [{ actorId: "kirsten", total: 17 }, { actorId: "ogre" }]);
+      "kirsten", { isTable }).pub.sides, [{ actorId: "kirsten" }, { actorId: "ogre" }]);
 }
 
 console.log("\nTHE DICE: THE FACES ARE THE TABLE'S, THE SUM IS NOT");

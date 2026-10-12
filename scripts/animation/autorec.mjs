@@ -268,6 +268,13 @@ export function animationFor(item) {
         rotate:       Number(opt.rotate ?? 0) || 0,
         tint:         opt.tint ? opt.tintColor : null,
         persistent:   !!opt.persistent,
+        // ⚠️ HOW BIG, AND WHETHER IT STAYS ON THE CREATURE (2026-10-12). AA plays
+        // an on-token record scaled to the token by `size` and masked to it when
+        // `isMasked` is set. Frostbite's record says size 1, masked; ACE read
+        // neither, so the ice played at its own full size: "a round ice disk
+        // about 30 feet across".
+        size:         Number(opt.size ?? 1) || 1,
+        masked:       !!opt.isMasked,
         elevation:    Number(opt.elevation ?? 0) || 0,
         zIndex:       Number(opt.zIndex ?? 1) || 1,
       },

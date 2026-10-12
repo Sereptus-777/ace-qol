@@ -53,12 +53,24 @@ globalThis.game = {
 globalThis.fromUuid = async (uuid) => allItems.find(i => i.uuid === uuid) ?? null;
 
 // The door: records each box and answers from `answers` (default: yes / first choice).
+// ⚠️ ONE BOX FOR ONE ROLL (his rule, 2026-10-12). A box that carries a luck roll
+// does what the real Lucky popup does (reaction-engine.mjs, _luckRollInTheBox):
+// on a yes it rolls the luck die and offers the dice from the SAME luckChoices the
+// popup asks, recorded on that one box as `choices`. The next answer picks.
 const boxes = [];
 let answers = [];
 game.aceQol.reactionEngine = {
   async _promptReaction(opts) {
     boxes.push(opts);
     const a = answers.shift();
+    if (opts.luckRoll) {
+      if (a === false) return { accepted: false, choiceData: {} };
+      const fresh = await L.rollLuckDie(opts.reactorActor ?? null, opts.luckRoll.label ?? "test");
+      const offer = L.luckChoices(opts.luckRoll, fresh);
+      opts.choices = offer.choices;
+      const pick = offer.keep ?? (answers.shift() ?? offer.choices[0]?.id ?? null);
+      return { accepted: true, choiceData: { luckSpent: false, fresh, choice: pick } };
+    }
     if (opts.choices?.length) {
       const pick = a ?? opts.choices[0].id;
       return pick === null ? { accepted: false, choiceData: {} } : { accepted: true, choiceData: { choice: pick } };
@@ -170,14 +182,14 @@ console.log("\n2014 LUCKY ON THEIR OWN ROLL: only when it is about to fail");
   const r = await quietly(() => L.ownRoll({ actor: firaxis, kind: "save", what: "Dexterity save (DC 15)",
     d20s: [7], kept: 7, total: 12, judge: judgeDC(15) }));
   check("a failing save (12 against DC 15): asked, spent, rolled, chose, 20 now",
-    boxes.length === 2 && r.spent && r.total === 20 && r.d20 === 15, JSON.stringify({ boxes: boxes.length, total: r.total }));
+    boxes.length === 1 && r.spent && r.total === 20 && r.d20 === 15, JSON.stringify({ boxes: boxes.length, total: r.total }));
   check("the box went to Firaxis (the door routes it to his owner) and carries the item, so the screen that says yes spends it",
     boxes[0].reactorActor === firaxis && boxes[0].luckItemUuid === firaxis.items[0].uuid);
-  check("the second box asks which d20, with each face and what it makes",
-    boxes[1].choices?.map(c => c.label).join(" / ") === "Keep 7 / Keep 15", boxes[1].choices?.map(c => c.label).join(" / "));
+  check("the SAME box asks which d20, with each face and what it makes (one box for one roll)",
+    boxes[0].choices?.map(c => c.label).join(" / ") === "Keep 7 / Keep 15", boxes[0].choices?.map(c => c.label).join(" / "));
   check("the failing 7 is painted red, the 15 that saves him green",
-    boxes[1].choices?.map(c => `${c.label}:${c.tone}`).join(" ") === "Keep 7:worse Keep 15:better",
-    boxes[1].choices?.map(c => `${c.label}:${c.tone}`).join(" "));
+    boxes[0].choices?.map(c => `${c.label}:${c.tone}`).join(" ") === "Keep 7:worse Keep 15:better",
+    boxes[0].choices?.map(c => `${c.label}:${c.tone}`).join(" "));
   check("one luck die rolled, one point spent (1 of 3 left)", rollsMade === 1 && L.luckyFeat(firaxis).left === 1);
 
   boxes.length = 0;
@@ -185,6 +197,23 @@ console.log("\n2014 LUCKY ON THEIR OWN ROLL: only when it is about to fail");
     d20s: [18], kept: 18, total: 23, judge: judgeDC(15) }));
   check("a save already passed: no box, and the console says why",
     boxes.length === 0 && logs.some(l => /already a success/.test(l)), logs.find(l => /Firaxis/.test(l)));
+
+  // ⚠️ His table, 2026-10-12: "A 20 that totals 31 against DC 13 is a success.
+  // Lucky does not open." A creature's DC is not on the player's screen, so the
+  // verdict is the GM's; a roll nobody could judge is never offered Lucky.
+  boxes.length = 0;
+  await quietly(() => L.ownRoll({ actor: firaxis, kind: "save", what: "Wisdom save",
+    d20s: [20], kept: 20, total: 31, judge: () => ({ fails: null, words: "" }) }));
+  check("a roll nobody could judge: no box, and the console says why",
+    boxes.length === 0 && logs.some(l => /nobody could say whether the save failed/.test(l)), logs.find(l => /Firaxis/.test(l)));
+  // The GM said the 7 failed; whether a 15 saves is not known on this screen. The
+  // higher die is still the better one, and nothing claims it saves.
+  const hidden = L.luckChoices({ mode: "own", kept: 7, shown: [7],
+    table: { 7: { score: 0 * 10000 + 12, sub: "12, failed", gmSub: "12, failed" },
+             15: { score: 1 * 10000 + 20, sub: "20", gmSub: "20" } } }, 15);
+  check("with the DC hidden, the failed die is red and the higher one green, with no word on it",
+    hidden.choices.map(c => `${c.label} ${c.sub}:${c.tone}`).join(" | ") === "Keep 7 12, failed:worse | Keep 15 20:better",
+    hidden.choices.map(c => `${c.label} ${c.sub}:${c.tone}`).join(" | "));
 
   boxes.length = 0; answers = [false];
   const kept = await quietly(() => L.ownRoll({ actor: firaxis, kind: "check", what: "Athletics (DC 15)",
@@ -239,20 +268,24 @@ console.log("\n2014 LUCKY ON ATTACKS: the attacker on a miss, the target on a hi
   res = [attackResult(firax, 16, 21, 15)];
   await quietly(() => L.afterAttackRoll({ actor: goblin, item, results: res }));
   check("a goblin's attack about to hit Firaxis: he is asked, rolls a 3, makes it use his die: a miss",
-    boxes[0]?.reactorActor === firax && boxes[1]?.choices?.length === 2 && res[0].hitResult === "miss" && res[0].attackTotal === 8,
+    boxes.length === 1 && boxes[0]?.reactorActor === firax && boxes[0]?.choices?.length === 2 && res[0].hitResult === "miss" && res[0].attackTotal === 8,
     `${res[0].hitResult} ${res[0].attackTotal}`);
   check("that box shows the attacker on the other side", boxes[0]?.attackerName === "Goblin");
   check("the choice paints the goblin's hit red and his own miss green (his rule)",
-    boxes[1]?.choices?.map(c => `${c.label} ${c.sub}:${c.tone}`).join(" | ") === "Their 16 21, hits you:worse | Your 3 8, misses:better",
-    boxes[1]?.choices?.map(c => `${c.label} ${c.sub}:${c.tone}`).join(" | "));
+    boxes[0]?.choices?.map(c => `${c.label} ${c.sub}:${c.tone}`).join(" | ") === "Their 16 hits you:worse | Your 3 misses:better",
+    boxes[0]?.choices?.map(c => `${c.label} ${c.sub}:${c.tone}`).join(" | "));
+  // The goblin's total is the GM's: the defender reads the word, the GM the sum.
+  check("and the attacker's totals are on the GM's line only",
+    boxes[0]?.choices?.map(c => c.gmSub).join(" | ") === "21, hits you | 8, misses",
+    boxes[0]?.choices?.map(c => c.gmSub).join(" | "));
 
   // Both dice hit: the lower total is still the better one for him.
   const firaxTie = fresh(); boxes.length = 0; rollQueue.push(18); answers = [true, "theirs"];
   res = [attackResult(firaxTie, 16, 21, 15)];
   await quietly(() => L.afterAttackRoll({ actor: goblin, item, results: res }));
   check("when both dice hit, the lower total is green and the higher red",
-    boxes[1]?.choices?.map(c => `${c.label}:${c.tone}`).join(" ") === "Their 16:better Your 18:worse",
-    boxes[1]?.choices?.map(c => `${c.label}:${c.tone}`).join(" "));
+    boxes[0]?.choices?.map(c => `${c.label}:${c.tone}`).join(" ") === "Their 16:better Your 18:worse",
+    boxes[0]?.choices?.map(c => `${c.label}:${c.tone}`).join(" "));
 
   // The same number on both dice: no box at all (his rule: keep the skip).
   const firaxSame = fresh(); boxes.length = 0; rollQueue.push(16); answers = [true];

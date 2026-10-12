@@ -167,9 +167,12 @@ console.log("\n\u00a7 13.4  WHAT A CARD SAYS ABOUT ITS OWN NUMBERS");
     /console\.log\(`ace-qol \| the roll used/.test(rf)
     && !/more than the sheet shows\)`/.test(rf),
     "chat gets the number, the console gets the argument");
-  check("the portrait is shown whole",
-    /width: 52px !important;/.test(qolCss) && /object-fit: contain !important;/.test(qolCss),
-    "not a 32px circle");
+  // ⚠️ REVERSED 2026-10-11 (his rule: "Every portrait on every card is framed from the
+  // top of the picture down... The box fills with whatever fits under that."). The
+  // 09-29 box stays; it fills now, anchored at the top, instead of showing it whole.
+  check("the portrait fills its box, framed from the top",
+    /width: 52px !important;/.test(qolCss) && /img\.ace-face \{ object-fit: cover !important; object-position: 50% 0 !important; \}/.test(qolCss),
+    "not a 32px circle, not the middle of the picture");
   // The die and the sum are now the row's second line, side by side, and the sum
   // itself is one piece of text (his card, 2026-09-30).
   check("the die sits with the result it made",

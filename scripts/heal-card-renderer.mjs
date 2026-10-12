@@ -151,7 +151,7 @@ export class HealCardRenderer {
 
     return `
       <div class="ace-qol-heal-card-target ${appliedClass}" data-target-idx="${idx}" data-token-id="${t.tokenId}">
-        <img class="ace-qol-heal-card-target-img" src="${t.img}" alt="" onerror="this.style.display='none'">
+        <img class="ace-qol-heal-card-target-img ace-face" src="${t.img}" alt="" onerror="this.style.display='none'">
         <div class="ace-qol-heal-card-target-info">
           <div class="ace-qol-heal-card-target-name">${foundry.utils.escapeHTML(t.name)}</div>
           ${/* ⚠️ HIT POINTS ARE THE GM'S, A PARTY MEMBER'S INCLUDED (his rule,

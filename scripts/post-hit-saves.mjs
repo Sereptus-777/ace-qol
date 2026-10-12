@@ -822,7 +822,7 @@ export class PostHitSaves {
       return `
         <div class="ace-qol-save-target">
           <div class="ace-qol-save-target-header">
-            <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-target-img" />
+            <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-target-img ace-face" />
             <span class="ace-qol-save-target-name">${t.name}</span>
             <span class="ace-qol-save-target-mod">${save.ability.toUpperCase()} +${saveMod}</span>
           </div>

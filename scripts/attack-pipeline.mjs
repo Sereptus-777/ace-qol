@@ -46,7 +46,8 @@ import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 // sits at the centre of.
 import { gateOff } from "./why-not.mjs";
 // § 13.3: a monster's AC is not on a card; the wrapper says whose it is.
-import { acSpan, bonusSpan } from "./chat-render-utils.mjs";
+import { acSpan, attackSentenceHtml, bonusSpan } from "./chat-render-utils.mjs";
+import { faceOf } from "./face.mjs";
 
 // ─── Profile access for this pipeline (2026-07-28, re-cut 2026-08-25) ────────
 //
@@ -1749,8 +1750,8 @@ export class AttackPipeline {
                       : anyHit ? "ace-qol-result-hit"
                       : "ace-qol-result-miss";
 
-    // ── Target rows ──
-    const targetRows = results.map(r => {
+    // ── Target rows: the GM's row and the table's row, side by side ──
+    const rowPairs = results.map(r => {
       const tags = CombatState.getSummaryTags(r);
       const tagHtml = tags.map(t =>
         `<span class="ace-qol-tag ace-qol-tag-${t.type}"><i class="fas ${t.icon}"></i> ${t.label}</span>`
@@ -1821,10 +1822,10 @@ export class AttackPipeline {
         ? `<div class="ace-qol-atk-mirror-caption" style="color:#7fd08a;"><i class="fas fa-clover"></i> ${foundry.utils.escapeHTML(String(r.luck))}</div>`
         : "";
 
-      return `
+      const gm = `
         <div class="ace-qol-atk-row">
           <div class="ace-qol-atk-target">
-            ${r.img ? `<img src="${r.img}" class="ace-qol-atk-img" />` : ""}
+            ${r.img ? `<img src="${r.img}" class="ace-qol-atk-img ace-face" />` : ""}
             <span class="ace-qol-atk-name">${r.name}</span>
             <span class="ace-qol-atk-ac">${acDisplay}</span>
             <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
@@ -1837,16 +1838,76 @@ export class AttackPipeline {
           ${coverTag || tagHtml ? `<div class="ace-qol-atk-tags ace-qol-gm-only">${coverTag}${tagHtml}</div>` : ""}
         </div>
       `;
-    }).join("");
+      // The table's row: the target's square portrait, the name, the word on the
+      // right. An empty square when the creature has no portrait (his rule,
+      // 2026-10-05: "leave the square empty").
+      const table = `
+        <div class="ace-qol-atk-row">
+          <div class="ace-qol-atk-target">
+            ${r.img ? `<img src="${r.img}" class="ace-qol-atk-portrait ace-face" alt="" />` : `<span class="ace-qol-atk-portrait"></span>`}
+            <span class="ace-qol-atk-table-name">${r.name}</span>
+            <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
+          </div>
+          ${mirrorCaption}
+          ${luckCaption}
+        </div>
+      `;
+      return { gm, table };
+    });
+    const targetRows = rowPairs.map(p => p.gm).join("");
+    const tableRows = rowPairs.map(p => p.table).join("");
+
+    /* ⚠️🔴 THE TABLE'S CARD AND THE GM'S CARD ARE TWO LAYOUTS (his rule,
+       2026-10-11, the live test: "The player's attack card, top to bottom... The
+       header is the attacker's portrait and 'Attacks <the target>.' That is the
+       whole header. Under that, the die, then 'Rolled a 13 and hit.'... Under
+       that, the target's portrait, square, his name, and the pill on the right...
+       The GM attack card is not this layout. It keeps the math.").
+       The GM's card is the GM half, cut from every player's copy before it is
+       sent (road/table-view.mjs); the table's card steps aside on the GM's
+       screen (.ace-qol-table-only). */
+    const _escName = (v) => foundry.utils.escapeHTML(String(v ?? ""));
+    const _names = results.map(r => r.name).filter(Boolean).map(_escName);
+    const _whom = _names.length <= 1 ? (_names[0] ?? "")
+      : `${_names.slice(0, -1).join(", ")} and ${_names[_names.length - 1]}`;
+    const _attackerFace = faceOf(actor);
+    const _bd20 = `modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-${d20}_nobg.png`;
+    // ⚠️ ONE HEADER ON BOTH CARDS (his rule, 2026-10-11: "The GM attack card gets
+    // the same header as the player's. The attacker's portrait, square, and
+    // 'Attacks <the target>.' Not the fist picture. Not the word Fist. The
+    // portrait is the bigger size the player's just got.").
+    const _attackerPortrait = _attackerFace
+      ? `<img src="${_attackerFace}" class="ace-qol-atk-portrait ace-qol-atk-attacker ace-face" alt="" />`
+      : `<span class="ace-qol-atk-portrait ace-qol-atk-attacker"></span>`;
+    const _attacksLine = `<strong class="ace-qol-atk-item-name ace-qol-atk-attacks">Attacks ${_whom}.</strong>`;
+    const tableCard = `
+        <div class="ace-qol-atk-table ace-qol-table-only">
+          <div class="ace-qol-atk-header">
+            ${_attackerPortrait}
+            ${_attacksLine}
+          </div>
+          <div class="ace-qol-atk-roll">
+            <span class="ace-qol-mod-die">
+              <img class="ace-qol-atk-d20-img" src="${_bd20}" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">
+              <i class="fas fa-dice-d20 ace-qol-atk-d20-fallback" style="display:none"></i>
+            </span>
+            ${attackSentenceHtml(d20, results)}
+          </div>
+          <div class="ace-qol-atk-results">
+            ${tableRows}
+          </div>
+        </div>`;
 
     // Collapsible item details (embeds the dnd5e description + property tags)
     const itemDetailsHtml = await this._buildItemDetails(item);
 
     const cardHtml = `
       <div class="ace-qol-attack-card">
+        ${tableCard}
+        <div class="ace-qol-gm-only ace-qol-block">
         <div class="ace-qol-atk-header">
-          <img src="${item.img || "icons/svg/sword.svg"}" class="ace-qol-atk-item-img" />
-          <strong class="ace-qol-atk-item-name">${item.name}</strong>
+          ${_attackerPortrait}
+          ${_attacksLine}
           <button type="button" class="ace-qol-atk-info-toggle" data-action="toggleItemDetails" title="Show item details" aria-expanded="false">
             <i class="fas fa-chevron-down"></i>
           </button>
@@ -1864,6 +1925,7 @@ export class AttackPipeline {
         </div>
         <div class="ace-qol-atk-results">
           ${targetRows}
+        </div>
         </div>
       </div>
     `;

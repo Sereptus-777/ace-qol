@@ -63,5 +63,6 @@ export function faceImg(thing, cls, { alt = "" } = {}) {
   if (!src) return "";
   const esc = (s) => String(s ?? "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  return `<img src="${esc(src)}" class="${esc(cls)}" alt="${esc(alt)}" />`;
+  // Framed from the top, like every portrait (his rule, 2026-10-11): ace-face.
+  return `<img src="${esc(src)}" class="${esc(cls)} ace-face" alt="${esc(alt)}" />`;
 }

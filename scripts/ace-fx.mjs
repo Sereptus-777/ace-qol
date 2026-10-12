@@ -1,22 +1,33 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  ACE: QOL — Auto-Animation  (Foundry-native FX)
+//  ACE: QOL — Foundry-native FX
 // ───────────────────────────────────────────────────────────────────────────
-//  Two automatic, asset-free effects that fire on EVERY spell, themed by the
-//  spell's damage type — no per-item setup:
+//  Asset-free effects other parts of ACE ask for by name: the cast flourish on
+//  a spell whose only clip is a condition ACE draws itself, the frost
+//  silhouette that is Frostbite's own clip (animation/spell-animator.mjs), the
+//  ghostly wave a
+//  caster-centred emanation sends out (Ghostly Howl, caster-emanation.mjs and
+//  the save resolver), their sounds, and the damage-type colours they share.
 //
-//    1. CAST FLOURISH  — a quick themed bloom + expanding ring on the caster
-//                        the instant Cast fires.
-//    2. SILHOUETTE ENCRUST — on a FAILED save, frost/ice that forms over the
-//                        TARGET's own silhouette (masked to the token's alpha,
-//                        NOT an outline glow), then fades. One-shot, no loop.
+//  ⚠️🔴 ONE PICTURE AT THE CAST, AND ONLY WHERE THE SPELL HAS NO OTHER (his
+//  rules, 2026-10-11). This file used to fire on its own: a coloured flourish on
+//  the caster at EVERY cast, and a frost or fire crust with an impact sound on
+//  every FAILED SAVE. The flourish was a second picture beside a spell's own
+//  clip (Frostbite's wrong first frame); the crust's sound fired on a save roll
+//  and again when a player's result was sent on after Lucky was let go. His
+//  rule: "A spell's sound and its animation fire once, at the cast." So
+//  nothing here listens for a cast or a save any more, and the crust is gone.
 //
-//  Pure PIXI on canvas.primary. NO Token Magic FX (Johnny runs with it off),
-//  NO Sequencer-asset dependency. Broadcast over the module socket so every
-//  connected client sees the same effect — the trigger hooks only fire on one
-//  client each (cast → caster's client, save → the GM), so we relay to the rest.
+//  The flourish stays for ONE kind of spell, by his word the same evening:
+//  "Charm Person, and any spell whose only clip is a condition badge, still
+//  gets a flourish at the cast. The September 30 rule stands: ACE draws the
+//  condition, and the JB2A badge does not play. The flourish is not that badge.
+//  Do not put the ring back on a spell that already has its own clip." The
+//  animator (animation/spell-animator.mjs) asks for it in exactly that case,
+//  at the cast, after the Counterspell answer: castFlourish below.
 //
-//  Per-item Forge FX (flags["ace-artificer"].fx) remains the explicit OVERRIDE
-//  layer; this is the automatic DEFAULT beneath it.
+//  Pure PIXI on canvas.stage. NO Token Magic FX (Johnny runs with it off), NO
+//  Sequencer-asset dependency. Broadcast over the module socket so every
+//  connected client sees the same effect.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { MODULE_ID } from "./ace-qol.mjs";
@@ -28,7 +39,7 @@ import { weaponDamageTypes } from "./read-activities.mjs";
 // runs at runtime (ready hook / cast), by which point MODULE_ID is defined.
 function _socket() { return `module.${MODULE_ID}`; }
 
-// Damage-type → theme colour (drives both the cast bloom and the impact tint).
+// Damage-type → theme colour (the flourish and an emanation's wave take their spell's colour).
 export const DAMAGE_THEME = {
   cold:      0x9fd8ff, fire:    0xff7a3c, lightning: 0x9fd0ff, thunder: 0xc9b6ff,
   acid:      0x9be04a, poison:  0x86d36b, necrotic:  0x8a63b8, radiant: 0xffe9a3,
@@ -46,18 +57,6 @@ export const HEAL_COLOR = 0x7ee081;
 // Johnny 2026-07-29: "it could last for one second longer."
 const GHOSTLY_WAVE_MS = 2300;
 
-// Damage types that look right as a body-encrusting impact (frost, char, etc.).
-// Pure physical (bludgeoning/piercing/slashing) is excluded — a sword hit
-// shouldn't coat a creature in frost. Those can get a lighter impact later.
-const ENCRUST_TYPES = new Set([
-  "cold", "fire", "acid", "lightning", "thunder", "poison",
-  "necrotic", "radiant", "psychic", "force",
-]);
-
-// Per-token throttle so a re-emitted saveComplete can't stack two encrusts + sounds.
-const _recentEncrust = new Map();
-
-/** First recognised damage type on the item (activity-first, then legacy). */
 /**
  * The damage type that should colour the flourish.
  *
@@ -126,61 +125,28 @@ function _resolveToken(sceneId, tokenId) {
   } catch (_) { return null; }
 }
 
-// Per-damage-type fallback sound from the psfx spell-sound library, IF the user runs
-// it. Used only when the user hasn't set their own `aceFxSounds[type]`, so the encrust
-// has good audio out of the box for psfx owners. Gated on psfx being active → a no-op
-// for everyone else (they get the silent encrust until they pick a sound). Uses the
-// default `modules/psfx/...` path; if the user relocated psfx the file just won't load.
-function _psfxFallbackSound(dt) {
-  try {
-    if (!game.modules?.get?.("psfx")?.active) return null;
-    const P = "modules/psfx/library/cantrips";
-    const MAP = {
-      cold:      `${P}/ray-of-frost/v1/ray-of-frost-003.ogg`,
-      fire:      `${P}/fire-bolt/v1/fire-bolt-001-30ft.ogg`,
-      lightning: `${P}/shocking-grasp/v1/shocking-grasp-001.ogg`,
-      acid:      `${P}/acid-splash/v1/acid-splash-003-30ft.ogg`,
-      poison:    `${P}/poison-spray/v1/poison-spray-001.ogg`,
-      thunder:   `${P}/thunderclap/v1/thunderclap-001.ogg`,
-      necrotic:  `${P}/toll-the-dead/v1/toll-the-dead-001.ogg`,
-      radiant:   `${P}/sacred-flame/v1/sacred-flame-target-01.ogg`,
-      force:     `${P}/eldritch-blast/v1/eldritch-blast-001.ogg`,
-      psychic:   `${P}/mind-sliver/v1/mind-sliver-001.ogg`,
-    };
-    return MAP[dt] ?? null;
-  } catch (_) { return null; }
-}
-
 export class AceFX {
 
   static register() {
-    // World map of damage-type → impact sound path, populated by the one-time
-    // migration that retires per-item Forge FX into this auto-animation layer.
-    // Hidden setting (no config UI) — edited via the migration console snippet.
+    // World map of sound paths, populated by the one-time migration that
+    // retired per-item Forge FX into this layer. Hidden setting (no config UI),
+    // edited via the migration console snippet. ⚠️ Since 2026-10-11 only its
+    // "cast" key is read, for the flourish; the per-damage-type keys belonged to
+    // the impact crust, which is gone.
     try {
       game.settings.register(MODULE_ID, "aceFxSounds", {
         scope: "world", config: false, type: Object, default: {},
       });
     } catch (_) { /* already registered */ }
 
-    // ⚠️🔴 THIS SETTING WAS READ AND NEVER REGISTERED (found 2026-08-23).
-    //
-    // _enabled() below reads "autoAnimations" and the only other mention of it
-    // in the whole module is that read. game.settings.get THROWS on a key that
-    // was never registered, so every call landed in a catch that returned true,
-    // and the comment there said so out loud: "setting not registered yet".
-    //
-    // Net effect: the cast flourish and the silhouette encrust were permanently
-    // ON, with no switch anywhere to turn them off. A GM who finds them
-    // distracting had nothing to click and nothing to find. That is a feature
-    // with a toggle that does not exist — the same shape as a button wired to
-    // nothing.
-    //
-    // Registered now, visible, defaulting to ON so nobody's world changes.
+    // ⚠️🔴 THIS SETTING WAS READ AND NEVER REGISTERED (found 2026-08-23), and
+    // a feature with no switch is the same shape as a button wired to nothing.
+    // ⚠️ 2026-10-11: it switches the one flourish left, so it says only that.
+    // The impact crust it used to name is gone.
     try {
       game.settings.register(MODULE_ID, "autoAnimations", {
-        name: "Spell Flourish and Impact Effects",
-        hint: "The coloured flourish when a spell is cast, and the brief silhouette flash when a creature is hit. Purely cosmetic — turning it off changes no rules. Default: ON.",
+        name: "Spell Flourish",
+        hint: "A coloured flourish on the caster when a spell is cast whose only clip is a condition ACE draws on the creature itself, such as Charm Person. A spell with its own clip never gets it. Purely cosmetic, turning it off changes no rules. Default: ON.",
         scope: "world", config: true, type: Boolean, default: true,
       });
     } catch (_) { /* already registered */ }
@@ -194,10 +160,9 @@ export class AceFX {
             const tk = _resolveToken(payload.sceneId, payload.tokenId);
             if (tk) AceFX.flourish(tk, payload.color);
             AceFX._playSound(payload.soundSrc);
-          } else if (payload?.action === "aceFx:encrust") {
+          } else if (payload?.action === "aceFx:silhouette") {
             const tk = _resolveToken(payload.sceneId, payload.tokenId);
             if (tk) AceFX.encrust(tk, { color: payload.color });
-            AceFX._playSound(payload.soundSrc);
           } else if (payload?.action === "aceFx:ghostlyWave") {
             const tk = _resolveToken(payload.sceneId, payload.tokenId);
             if (tk) {
@@ -212,141 +177,28 @@ export class AceFX {
       });
     } catch (err) { console.warn(`${MODULE_ID} | AceFX socket registration failed:`, err); }
 
-    // ── CAST → flourish on the caster. postCreateUsageMessage fires on the
-    //    caster's own client; we play it locally and relay to everyone else. ──
-    Hooks.on("dnd5e.postCreateUsageMessage", async (activity) => {
-      try {
-        if (!AceFX._enabled()) return;
-        const item = activity?.item;
-        if (item?.type !== "spell") return;
-        // Save spells with no template go through OUR target picker — their flourish
-        // must fire AFTER the pick (via ace-qol.spellCommitted), not here at the
-        // cast-click instant (which is before the picker even opens). Skip them here.
-        const _sa = activity?.save?.ability;
-        const _hasSave = _sa instanceof Set ? _sa.size > 0 : !!_sa;
-        const _tpl = activity?.target?.template?.type ?? activity?.target?.type
-                  ?? item.system?.target?.template?.type ?? "";
-        if (_hasSave && !_tpl) return;
-        const tk = activity?.actor?.getActiveTokens?.()?.[0];
-        if (!tk) return;
-        // ⚠️🔴 THE FLOURISH USED TO FIRE AT THE CAST-CLICK, WHICH IS BEFORE
-        // ANYBODY HAS ANSWERED. Johnny's log, 2026-09-17: "CAST hook FLOURISH on
-        // Neferon immediately, then Fireball is dead." This hook is the same one
-        // the Counterspell check answers on, so at this instant nothing knows
-        // yet. Unlike the template - which belongs to dnd5e and which ACE must
-        // never place - the flourish is entirely ours, so holding it is not
-        // reaching around anybody.
-        //
-        // ⚠️ AND IT COSTS AN ORDINARY CAST NOTHING. With nobody able to counter,
-        // the barrier is already settled and this returns in the same tick.
-        if (await AceFX._castWasStopped(activity, item)) return;
-        console.log(`${MODULE_ID} | [ace-fx] CAST hook: "${item?.name}" caster-token=${tk.name}`);
-        AceFX.flourishBroadcast(tk, _themeColor(item));
-      } catch (err) { console.warn(`${MODULE_ID} | AceFX cast-flourish threw:`, err); }
-    });
-
-    // ── CAST COMMITTED (after the target picker resolves) → flourish on the
-    //    caster. The save-engine emits this once a target is locked in, so the
-    //    flourish lands when the spell actually goes off, not at the cast-click. ──
-    Hooks.on("ace-qol.spellCommitted", async (data) => {
-      try {
-        if (!AceFX._enabled()) return;
-        const tk = data?.casterActor?.getActiveTokens?.()?.[0];
-        if (!tk) return;
-        // Same question, same answer: a cast that was stopped plays nothing.
-        if (await AceFX._castWasStopped(data?.activity ?? null, data?.item ?? null, data?.casterActor ?? null)) return;
-        console.log(`${MODULE_ID} | [ace-fx] COMMIT hook (post-pick): "${data?.item?.name}" caster-token=${tk.name}`);
-        AceFX.flourishBroadcast(tk, _themeColor(data?.item));
-      } catch (err) { console.warn(`${MODULE_ID} | AceFX commit-flourish threw:`, err); }
-    });
-
-    // ── DAMAGE LANDS on a target → encrust it, themed by the damage type. This
-    //    is the dramatic beat ("oh yeah, I hit"), synced with the impact. Fires on
-    //    the GM (damage applicator is GM-gated); we relay. Elemental damage only —
-    //    a plain weapon hit shouldn't coat a creature in frost. ──
-    // Encrust on the FAILED SAVE — the proven-firing beat (it drew here at 0.7.142).
-    // The damage-apply hooks (damageApplied / hpApplied) never fired in the single-NPC
-    // save flow, so we anchor on saveComplete, which the save-engine reliably emits.
-    // Only for elemental-DAMAGE spells (an ice crust on Hold Person would be wrong).
-    // The impact sound rides with it here, so visual + sound stay synced.
-    Hooks.on("ace-qol.saveComplete", async (data) => {
-      try {
-        if (!AceFX._enabled()) return;
-        if (data?.passed === true) return;             // only on a FAILED save
-        const tk = data?.actor?.getActiveTokens?.()?.[0];
-        if (!tk) return;
-        let item = null;
-        if (data?.itemUuid) item = await fromUuid(data.itemUuid).catch(() => null);
-        let dt = _itemDamageType(item, data?.activityId ?? null);
-        // ⚠️🔴 A SAVE'S FX IS THE DAMAGE THAT SAVE DEALS (2026-09-27, his table).
-        // This read the activity's stored damage parts, and Web keeps a 2d4 fire
-        // part on its Dexterity save that belongs to its burning-webs clause, not
-        // to the save. So failing to dodge a web played fire. The recipe reader
-        // already answers which parts a save actually deals; it is asked here too,
-        // by dynamic import so the FX layer adds no load-time edge.
-        if (dt && item) {
-          try {
-            const { damageTheSaveDeals, damageWordsOf } = await import("./inference/recipe.mjs");
-            const { plainSpellText } = await import("./inference/spell-text.mjs");
-            const words = plainSpellText(damageWordsOf(item?.system?.description?.value ?? ""));
-            const kept = damageTheSaveDeals([{ formula: "", types: [dt] }], words).kept;
-            if (!kept.length) {
-              console.log(`${MODULE_ID} | [ace-fx] SAVE-FAIL: "${item?.name}" plays no ${dt}. Its words `
-                + `give that damage to something other than the save, so the save deals none.`);
-              dt = null;
-            }
-          } catch (err) {
-            console.warn(`${MODULE_ID} | [ace-fx] could not check whose damage the ${dt} is `
-              + `(playing it as before):`, err);
-          }
-        }
-        console.log(`${MODULE_ID} | [ace-fx] SAVE-FAIL encrust: item="${item?.name ?? "?"}" dmgType=${dt ?? "none"} target=${tk?.name}`);
-        if (!dt || !ENCRUST_TYPES.has(dt)) return;     // ice/encrust only for elemental-damage spells
-        // Resolve the impact sound. Honor a configured `aceFxSounds[type]` ONLY when it's
-        // a real file path — a bare Sequencer DB key (e.g. "psfx.magic-signs.rune…") that
-        // older builds wrote in here 404s through AudioHelper, so we skip it and fall
-        // through to the psfx file fallback (a known-good per-type sound file).
-        let soundSrc = null;
-        try {
-          const userSnd = String((game.settings.get(MODULE_ID, "aceFxSounds") ?? {})[dt] || "").trim();
-          if (userSnd && (/[\/\\]/.test(userSnd) || /\.(ogg|wav|mp3|webm|m4a|flac)$/i.test(userSnd))) {
-            soundSrc = userSnd;
-          }
-        } catch (_) {}
-        if (!soundSrc) soundSrc = _psfxFallbackSound(dt);
-        // The impact, on the same rule as the flourish: a cast that was stopped
-        // lands nothing, so it flashes nothing either.
-        if (await AceFX._castWasStopped(null, item, data?.casterActor ?? null)) return;
-        console.log(`${MODULE_ID} | [ace-fx] save-fail: "${item?.name}" (${dt}) — firing ENCRUST + SOUND together NOW (src=${soundSrc ?? "none"})`);
-        AceFX.encrustBroadcast(tk, DAMAGE_THEME[dt] ?? DEFAULT_COLOR, soundSrc);
-      } catch (err) { console.warn(`${MODULE_ID} | AceFX save-fail encrust threw:`, err); }
-    });
-
-    console.log(`${MODULE_ID} | [ace-fx] AceFX auto-animation ONLINE (cast flourish + silhouette encrust)`);
+    console.log(`${MODULE_ID} | [ace-fx] AceFX online: the flourish and the ghostly wave, on request. Nothing `
+      + `fires on its own at a cast or a save; a cast's one clip is its owner's (animation/spell-animator.mjs).`);
   }
 
   /**
-   * Was this cast stopped before it could happen?
-   *
-   * ⚠️🔴 "Dead cast = zero ACE-fx. No flourish, no impact, no streak."
-   * (Johnny, 2026-09-17.) Asks the one reader, waiting only while a Counterspell
-   * prompt is genuinely open - which is never the case when nobody at the table
-   * can counter, so an ordinary cast is not delayed by a single frame.
-   *
-   * Fails OPEN: if the reaction engine cannot be reached, the spell plays. A
-   * missing animation is a bug; a missing animation with no explanation is two.
+   * The cast flourish, for a spell whose only clip is a condition ACE draws
+   * itself (his rule, 2026-10-11; see the top of this file). The animator calls
+   * it at the cast, after the Counterspell answer, and nowhere else.
+   * @returns {boolean} whether it played
    */
-  static async _castWasStopped(activity, item = null, actor = null) {
+  static castFlourish(token, item) {
     try {
-      const { ReactionEngine } = await import("./reaction-engine.mjs");
-      const decision = await ReactionEngine.awaitCastDecision(activity ?? item?.uuid ?? null,
-        { item: item ?? activity?.item ?? null, actor: actor ?? activity?.actor ?? item?.actor ?? null });
-      if (!decision?.abort) return false;
-      console.log(`${MODULE_ID} | [ace-fx] "${item?.name ?? activity?.item?.name ?? "that cast"}" was `
-        + `${decision.reason} - nothing is played for it.`);
+      if (!token) return false;
+      if (!AceFX._enabled()) {
+        console.log(`${MODULE_ID} | [ace-fx] no flourish for "${item?.name ?? "that spell"}": the Spell `
+          + `Flourish setting is off.`);
+        return false;
+      }
+      AceFX.flourishBroadcast(token, _themeColor(item));
       return true;
     } catch (err) {
-      console.warn(`${MODULE_ID} | [ace-fx] could not ask whether that cast survived, so it plays:`, err);
+      console.warn(`${MODULE_ID} | [ace-fx] the cast flourish for "${item?.name ?? "that spell"}" could not play:`, err);
       return false;
     }
   }
@@ -370,21 +222,32 @@ export class AceFX {
     } catch (_) { /* solo / no socket — local play already happened */ }
   }
 
-  static encrustBroadcast(token, color, soundSrc = null) {
-    // Throttle rapid double-fires (re-emitted saveComplete) — one hit, one crust.
+  /**
+   * The frost silhouette on one creature, here and on every other screen.
+   *
+   * ⚠️🔴 FROSTBITE'S OWN CLIP (his rule, 2026-10-12: "Frostbite plays the
+   * silhouette you drew, on the target, inside its square... The clip that plays
+   * is the Frostbite silhouette made for this spell, the one that is yours."). It
+   * is the crust below, masked to the token's own picture, so it cannot leave
+   * that creature's square. It has no sound of its own: the cast's one sound is
+   * its record's. The animator asks for it at the cast, after the Counterspell
+   * answer, and nowhere else; nothing here fires on a save any more.
+   */
+  static silhouetteBroadcast(token, color = DAMAGE_THEME.cold) {
     try {
-      const now = Date.now();
-      if (now - (_recentEncrust.get(token.id) ?? 0) < 4000) return;
-      _recentEncrust.set(token.id, now);
-    } catch (_) {}
-    AceFX.encrust(token, { color });
-    AceFX._playSound(soundSrc);                       // local on this client
-    try {
-      game.socket.emit(_socket(), {
-        action: "aceFx:encrust",
-        sceneId: token.scene?.id ?? canvas.scene?.id, tokenId: token.id, color, soundSrc,
-      });
-    } catch (_) { /* solo / no socket — local play already happened */ }
+      if (!token) return false;
+      AceFX.encrust(token, { color });
+      try {
+        game.socket.emit(_socket(), {
+          action: "aceFx:silhouette",
+          sceneId: token.scene?.id ?? canvas.scene?.id, tokenId: token.id, color,
+        });
+      } catch (_) { /* solo / no socket: it already played here */ }
+      return true;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | [ace-fx] the frost silhouette on ${token?.name ?? "a creature"} could not play:`, err);
+      return false;
+    }
   }
 
   // Play a one-shot sound LOCALLY on this client. Each client calls this when it

@@ -146,6 +146,112 @@ const lich = creature({
 s = MultiattackEngine.summaryFor(lich);
 check("reads the Multiattack passage, not the legendary one", s?.total, 2);
 
+/* ═══ THE MULTIATTACK FEATURE CARRIES ITS ATTACKS (his rule, 2026-10-10) ════
+   "put one activity per attack on that same feature, copied from the attack
+   items on the sheet... Do not invent a second system." Pins the copy (a feat
+   is not a weapon: the base damage, its modifier and the magic bonus have to be
+   written in), the text's own order, and the hand-off to the real item. */
+console.log("\nTHE MULTIATTACK FEATURE CARRIES ITS ATTACKS");
+
+// A real natural claw: 1d8 slashing base, a +1 magic bonus, a finesse-style Dex
+// swing, and one extra 1d6 acid part of its own.
+const claw = {
+  name: "Claw", type: "weapon", id: "claw-id", img: "claw.webp",
+  system: {
+    offersBaseDamage: true, magicAvailable: true, magicalBonus: 1, proficiencyMultiplier: 1,
+    damage: { base: { formula: "1d8", toObject: () => ({ number: 1, denomination: 8, bonus: "", types: ["slashing"] }) } },
+  },
+};
+const clawAct = {
+  id: "claw-act", type: "attack", ability: "dex",
+  attack: { type: { value: "melee", classification: "weapon" } },
+  damage: { includeBase: true },
+  toObject: () => ({
+    _id: "claw-act", type: "attack", name: "", img: "", flags: {},
+    attack: { ability: "", bonus: "", flat: false, type: { value: "", classification: "" } },
+    damage: { includeBase: true, parts: [{ number: 1, denomination: 6, bonus: "", types: ["acid"] }] },
+    effects: [{ _id: "eff1" }], uses: { spent: 1, max: "3", recovery: [] },
+    consumption: { targets: [{ type: "itemUses", target: "", value: "1" }, { type: "attribute", target: "x", value: "1" }] },
+  }),
+};
+const copy = MultiattackEngine.copyAttackActivity(claw, clawAct, { sort: 2, randomId: () => "newid0000000001" });
+check("the copy has its own id", copy._id, "newid0000000001");
+check("the copy is named for the real item", copy.name, "Claw");
+check("the ability is written by name (Dex, not the feat's Str default)", copy.attack.ability, "dex");
+check("the weapon's magic bonus goes on the to-hit", copy.attack.bonus, "1");
+check("a feat gets no base damage, so includeBase is off", copy.damage.includeBase, false);
+check("the claw's base dice are the first damage part", `${copy.damage.parts[0]?.number}d${copy.damage.parts[0]?.denomination}`, "1d8");
+check("the base part carries the modifier and the magic bonus", copy.damage.parts[0]?.bonus, "@mod + 1");
+check("the claw's own acid part follows it", copy.damage.parts[1]?.types?.[0], "acid");
+check("the original's effects stay with the original", copy.effects.length, 0);
+check("the copy's uses start clean", copy.uses.max, "");
+check("consumption of its own uses is dropped, others kept", copy.consumption.targets.length, 1);
+check("the copy remembers which item it came from", copy.flags["ace-qol"]?.multiattackFrom?.itemId, "claw-id");
+
+// A weapon an NPC is NOT proficient with must not gain proficiency on a feat.
+const clumsy = { ...claw, system: { ...claw.system, magicAvailable: false, proficiencyMultiplier: 0 } };
+const clumsyCopy = MultiattackEngine.copyAttackActivity(clumsy, clawAct, { randomId: () => "x" });
+check("a non-proficient weapon's copy takes proficiency back off", clumsyCopy.attack.bonus, "-@prof");
+
+// The feature with copies on it is never one of its own attacks.
+const maWithCopies = { name: "Multiattack", type: "feat", id: "ma2",
+  system: { activities: { a: { type: "attack", activation: { type: "action" } } } } };
+check("the Multiattack feature is never an attack item", MultiattackEngine._isAttackItem(maWithCopies), false);
+check("a real claw still is", MultiattackEngine._isAttackItem({ ...claw, system: { activities: {} } }), true);
+
+// The text's own order: "one with its bite and two with its claws".
+const order = MultiattackEngine._parseMultiattack(
+  "the dragon makes three attacks: one with its bite and two with its claws.",
+  [{ name: "Claw" }, { name: "Bite" }]);
+const sorted = [...(order ?? [])].sort((a, b) => a.at - b.at).map(e => `${e.count} ${e.item.name}`).join(", ");
+check("entries can be put in the text's order", sorted, "1 Bite, 2 Claw");
+
+/* ── His three rules after the first fill (2026-10-10) ── */
+console.log("\nA NUMBER WINS, OR IS A CHOICE, NO NUMBER IS NO CHAIN, FORMS STAY APART");
+const read = (txt, names) => MultiattackEngine.readChain(txt, names.map(n => ({ name: n })));
+const show = (r) => (r.entries ?? []).map(e => `${e.count} ${e.item.name}`).join(", ") || "none";
+
+check("four words between the number and the name still count",
+  show(read("Rahadin makes three melee attacks with his scimitar.", ["Scimitar", "Dagger"])), "3 Scimitar");
+check("a plural name reads: three tentacles",
+  show(read("The creature makes three attacks with its tentacles.", ["Tentacle"])), "3 Tentacle");
+check("'only one of which can be a bite' is a limit, not a count",
+  show(read("Strahd makes two attacks, only one of which can be a bite attack.", ["Unarmed Strike", "Bite"])), "none");
+check("a total with no names is no chain",
+  show(read("The giant makes two attacks, using Thunderous Mace or Thundercloud in any combination.",
+    ["Thunderous Mace", "Thundercloud"])), "none");
+const knight = read("The knight makes two attacks with its longsword or two attacks with its longbow.",
+  ["Longsword", "Longbow"]);
+check("'or' keeps the first option only", show(knight), "2 Longsword");
+check("and says which option it kept", /longsword/i.test(knight.kept ?? ""), true);
+check("and which it left out", /longbow/i.test(knight.dropped ?? ""), true);
+check("'and' is not 'or': bite and claws stay together",
+  show(read("It makes three attacks: one with its bite and two with its claws.", ["Bite", "Claws"])), "1 Bite, 2 Claws");
+const raven = read("The wereraven makes two weapon attacks: one with its beak, one with its shortsword and one with its hand crossbow.",
+  ["Beak (Raven or Hybrid Form Only)", "Shortsword (Humanoid or Hybrid Form Only)", "Hand Crossbow (Humanoid Form Only)"]);
+check("the beak, the sword and the crossbow are not one attack (no shared form)", show(raven), "none");
+check("the form-only attacks that were left out are named", raven.formDropped.length, 3);
+const wolf = read("The werewolf makes two attacks: two with its spear or one with its bite and one with its claws.",
+  ["Spear (Humanoid Form Only)", "Bite (Wolf or Hybrid Form Only)", "Claws (Hybrid Form Only)"]);
+check("a chain all of one form keeps it (spear, first option)", show(wolf), "2 Spear (Humanoid Form Only)");
+const hybrid = read("It makes two attacks: one with its bite and one with its claws.",
+  ["Bite (Wolf or Hybrid Form Only)", "Claws (Hybrid Form Only)"]);
+check("bite and claws that share Hybrid stay together", show(hybrid), "1 Bite (Wolf or Hybrid Form Only), 1 Claws (Hybrid Form Only)");
+
+// The hand-off: pressing a copy presses the real activity instead.
+let pressed = null;
+const realAct = { id: "claw-act", type: "attack", use: async (cfg) => { pressed = cfg ?? {}; } };
+const owner = { name: "Bear", items: [] };
+const realItem = { ...claw, actor: owner, system: { ...claw.system, activities: { get: (id) => (id === "claw-act" ? realAct : null) } } };
+owner.items = [realItem];
+owner.items.get = (id) => owner.items.find(i => i.id === id) ?? null;
+const pressedCopy = { flags: { "ace-qol": { multiattackFrom: { itemId: "claw-id", activityId: "claw-act", itemName: "Claw" } } },
+  actor: owner, item: { actor: owner } };
+check("a press of the copy is stopped", MultiattackEngine.redirectCopiedAttack(pressedCopy, {}), false);
+await new Promise(r => setTimeout(r, 5));
+check("and the real Claw is pressed instead", pressed !== null, true);
+check("an ordinary press is left alone", MultiattackEngine.redirectCopiedAttack({ flags: {} }, {}), undefined);
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

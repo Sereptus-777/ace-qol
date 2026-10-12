@@ -577,8 +577,8 @@ export class WeaponMasteries {
                       border:2px solid #555; border-radius:8px; cursor:pointer;
                       background:#1a1a1f; transition: border-color 0.15s, transform 0.15s;
                       width:96px;">
-            <img src="${img}" style="width:64px; height:64px; border-radius:50%;
-                                     border:2px solid #d4af37; object-fit:cover;" />
+            <img class="ace-face" src="${img}" style="width:64px; height:64px; border-radius:50%;
+                                     border:2px solid #d4af37; " />
             <div style="margin-top:6px; font-size:12px; color:#e0e0e0; text-align:center;
                         max-width:84px; overflow:hidden; text-overflow:ellipsis;
                         white-space:nowrap;">${name}</div>

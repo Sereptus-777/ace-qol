@@ -982,9 +982,9 @@ export class TransformationEngine {
             <span class="ace-qol-tx-source">(${sourceLabel})</span>
           </div>
           <div class="ace-qol-tx-thumbs">
-            <img src="${sourceImg}" class="ace-qol-tx-thumb" title="${sourceName} (current form)" />
+            <img src="${sourceImg}" class="ace-qol-tx-thumb ace-face" title="${sourceName} (current form)" />
             <i class="fas fa-arrow-right ace-qol-tx-arrow"></i>
-            <img src="${targetImg}" class="ace-qol-tx-thumb" title="${targetName} (revert destination)" />
+            <img src="${targetImg}" class="ace-qol-tx-thumb ace-face" title="${targetName} (revert destination)" />
           </div>
           <div class="ace-qol-tx-body">
             <span class="ace-qol-tx-spell">${spellName}</span>

@@ -487,6 +487,23 @@ export class DamageCardRenderer {
    *   extras        the condition and refusal lines the road's card carried,
    *                 so switching to this one loses nothing Web was saying.
    */
+  /**
+   * A hit's damage card title: whose, and what with (his rule, 2026-10-11:
+   * "The title is the attacker's weapon damage, 'Shield Guardian's fist damage'
+   * on this one, same size as the title it replaces"). A natural weapon, or a
+   * weapon named for its kind, is a common word and reads in lower case ("fist",
+   * "longsword"); a weapon with a name of its own keeps it ("Dawnbringer").
+   */
+  static damageTitle(item, actor) {
+    const name = String(item?.name ?? "").trim();
+    const flat = (v) => String(v ?? "").toLowerCase().replace(/[^a-z]/g, "");
+    const type = item?.system?.type ?? {};
+    const common = type.value === "natural" || (!!type.baseItem && flat(type.baseItem) === flat(name));
+    const what = common ? name.toLowerCase() : name;
+    const who = String(actor?.token?.name ?? actor?.name ?? "").trim();
+    return who ? `${who}'s ${what} damage` : `${what} damage`;
+  }
+
   static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null, refundLink = null, activityId = null,
       { recipe = null, recipeFrom = null, titleNote = null, subLine = null,
         whisper = null, alreadyTaken = null, extras = null,
@@ -561,12 +578,19 @@ export class DamageCardRenderer {
           <!-- ⚠️ THE DICE SIT ON THE TITLE ROW (his rule): "The title row is Fire
                Aura and the dice, 2d6, on that same row." A hit keeps its
                "— Damage", which is what tells it apart from the attack card. -->
-          <strong class="ace-qol-dmg-item-name">${item.name}${titleNote ? "" : " — Damage"}</strong>
-          ${titleNote ? `<span class="ace-qol-dmg-dice-note">${foundry.utils.escapeHTML(String(titleNote))}</span>` : ""}
-          ${anyCrit ? `<span class="ace-qol-dmg-crit-rule">${critRuleLabel}</span>` : ""}
+          <!-- ⚠️ THE TITLE IS WHOSE AND WHAT WITH (his rule, 2026-10-11:
+               "Shield Guardian's fist damage"), on the GM's card and the table's
+               alike. A card that carries its own note (an aura, a fire) keeps its
+               own name. -->
+          <strong class="ace-qol-dmg-item-name">${foundry.utils.escapeHTML(titleNote ? String(item.name ?? "") : DamageCardRenderer.damageTitle(item, actor))}</strong>
+          ${/* ⚠️ THE DICE ARE THE GM'S CARD (his rule, 2026-10-11: "The player's
+               damage card loses the dice row... The GM damage card keeps the dice
+               row."). The note on the title row is dice too. */ ""}
+          ${titleNote ? `<span class="ace-qol-dmg-dice-note ace-qol-gm-only">${foundry.utils.escapeHTML(String(titleNote))}</span>` : ""}
+          ${anyCrit ? `<span class="ace-qol-dmg-crit-rule ace-qol-gm-only">${critRuleLabel}</span>` : ""}
         </div>
         ${subLine ? `<div class="ace-qol-dmg-subline">${foundry.utils.escapeHTML(String(subLine))}</div>` : ""}
-        <div class="ace-qol-dmg-roll-section">
+        <div class="ace-qol-dmg-roll-section ace-qol-gm-only ace-qol-block">
           <div class="ace-qol-dmg-components">${formulaRows}</div>
         </div>
         ${hasCleave ? `<div class="ace-qol-dmg-cleave-row">
@@ -1119,7 +1143,7 @@ export class DamageCardRenderer {
                  ⚠️ BOTH CLASSES. The old one stays because it is the handle
                  damage-applicator uses to wire the click that selects and pans to
                  the token; the save card's class is what decides the box. -->
-            ${portrait ? `<img src="${portrait}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait" />` : ""}
+            ${portrait ? `<img src="${portrait}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait ace-face" />` : ""}
             <span class="ace-qol-dmg-tgt-name">${name ?? "Unknown"}</span>
             ${isCrit ? '<span class="ace-qol-dmg-crit-badge">CRIT</span>' : ""}
           </div>

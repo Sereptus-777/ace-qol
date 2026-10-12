@@ -26,7 +26,7 @@ import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you me
 import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 // The one DC wrapper: it names the creature(s) rolling against the number
 // (ACE-ONE-ROAD.md § 13.2).
-import { registerChatCardHandler, dcSpan, bonusSpan } from "./chat-render-utils.mjs";
+import { registerChatCardHandler, dcSpan, bonusSpan, saveBonusSpan, isPartyActor } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 // ⚠️ THE ONE GATE. The pre-roll decision lives in scripts/gate/action-gate.mjs
@@ -79,6 +79,8 @@ import { aceDistanceFt } from "./geometry-utils.mjs";
 import { isSpiritGuardians, guardianFlavour, guardianDamage, narrowDamageTypes } from "./rules/spirit-guardians.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
 // Lucky (2014 and 2024) and the halfling's Lucky. See luck.mjs.
+// Pass or fail from the screen that holds the DC (his rule, 2026-10-12).
+import { askVerdict } from "./road/verdict.mjs";
 import { withHalflingLuck, halflingRerolled, luckyFeatItem, luckyFeat, ownRoll as luckOwnRoll,
          pressButton as luckPressButton, markCardAdvantage, cardHasAdvantage, takeCardAdvantage,
          LUCK_GREEN } from "./luck.mjs";
@@ -106,6 +108,47 @@ import { whoAnswers } from "./who-answers.mjs";
 import { faceOf } from "./face.mjs";
 
 /**
+ * EVERY BONUS IS NAMED, IN CAPITALS (His rule, 2026-10-12: "The GM card prints '6 + 1 = 7'. The +1 is not named.
+ * It has to say where it came from: 6 + 1 WIS = 7... The player card prints the
+ * die, the word FAIL... No formula and no total. This is his own save. He knows
+ * his own bonus, and the other players are allowed to see it... Name every bonus
+ * that way, on both cards, in capitals... One bare +1 is not an answer... A
+ * creature's bonus stays off the player card.")
+ *
+ * " + 1 WIS + 2 PROF", from the parts the roll itself recorded (`saveParts`),
+ * never the sheet read again. What the parts do not account for is a die a buff
+ * added (Bless, Bardic Inspiration), named by that buff; anything still unnamed
+ * is said in the console rather than passed off as a part.
+ *
+ * @param {Array<{name:string,value:number}>} parts
+ * @param {number|null} bonus   what the roll added to its die (total minus face)
+ * @returns {string}  "" for a roll that added nothing
+ */
+export function namedSaveSum(parts, bonus, { who = "", saveBonuses = [] } = {}) {
+  const words = { STR: "STR", DEX: "DEX", CON: "CON", INT: "INT", WIS: "WIS", CHA: "CHA", PROF: "PROF" };
+  const named = (Array.isArray(parts) ? parts : [])
+    .map(p => ({ n: Number(p?.value) || 0,
+      w: String(p?.name ?? p?.label ?? "").trim().split(/\s+/)[0].toUpperCase() }))
+    .filter(p => p.n !== 0)
+    .map(p => ({ ...p, w: words[p.w] ?? p.w }));
+  const rest = Number.isFinite(Number(bonus)) && bonus !== null
+    ? Number(bonus) - named.reduce((t, p) => t + p.n, 0) : 0;
+  if (rest) {
+    const die = (saveBonuses ?? []).find(b => {
+      const raw = String(b?.value ?? "").trim();
+      return raw && !Number.isFinite(Number(raw.replace(/^\+/, "")));
+    });
+    const w = die ? String(die.label ?? "").trim().split(/\s+/)[0].toUpperCase() : "";
+    if (!w) {
+      console.warn(`${MODULE_ID} | ${who || "a"} save added ${rest >= 0 ? "+" : "−"}${Math.abs(rest)} that `
+        + `none of its recorded parts names, so that number is printed without a name.`);
+    }
+    named.push({ n: rest, w });
+  }
+  return named.map(p => ` ${p.n >= 0 ? "+" : "−"} ${Math.abs(p.n)}${p.w ? ` ${p.w}` : ""}`).join("");
+}
+
+/**
  * Inline d20 result breakdown for a live save-card row: glowing black die face
  * + "raw +mod = total", readable (not a tiny bare total). `f` is a
  * pcSaveResult-style flag bundle ({ dieResult, saveTotal, passed, autoFailSave }).
@@ -115,12 +158,23 @@ function aceInlineRollBreakdown(f, passClass) {
     return `<span class="${passClass}" style="font-weight:700;font-size:15px;">AUTO-FAIL</span>`;
   }
   const face = f?.dieResult ?? null;
+  /* ⚠️ ON A PLAYER'S SCREEN, A CREATURE'S DIE AND NOTHING ELSE. This draws into a
+     card on THIS screen only, from this screen's own copy, so the one function
+     never sees it and it must decide itself. ⚠️🔴 A PARTY MEMBER'S OWN SAVE
+     SHOWS ITS NAMED SUM TO EVERYBODY (his rule, 2026-10-12, which replaces the
+     10-11 "die and PASS or FAIL" for a player's own roll). */
+  if (!game.user?.isGM && !isPartyActor(f?.actorId ?? null)) {
+    return face == null ? ""
+      : `<span style="display:inline-flex;align-items:center;gap:6px;font-family:'Signika',sans-serif;">`
+        + aceD20FaceImg(face, { size: 28 })
+        + `<span style="color:#fff;font-size:16px;font-weight:700;">${face}</span>`
+        + `</span>`;
+  }
   const mod = (typeof f?.saveTotal === "number" && face != null) ? f.saveTotal - face : null;
   if (face == null || mod == null) {
     return `<span class="${passClass}" style="font-weight:700;font-size:16px;">${f?.saveTotal ?? "?"}</span>`;
   }
-  const ms = mod >= 0 ? "+" : "";
-  const mp = mod === 0 ? "" : ` ${ms}${mod}`;
+  const mp = namedSaveSum(f?.saveParts, mod, { who: f?.targetName ?? "", saveBonuses: f?.saveBonuses });
   return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:'Signika',sans-serif;">`
     + aceD20FaceImg(face, { size: 28 })
     + `<span style="color:#fff;font-size:16px;font-weight:700;">${face}</span>`
@@ -694,7 +748,11 @@ export class SaveEngine {
       if (game.user.isGM) {
         console.log(`${MODULE_ID} | createChatMessage caught pcSaveResult for`, flags.tokenDocId, "castId:", flags.castId);
         // Small delay to let the DOM render first
-        setTimeout(() => this._onPcSaveResultPosted(flags), 200);
+        // ⚠️ READ AGAIN WHEN IT RUNS: the player's card was cut before it was
+        // sent (road/table-view.mjs), and its numbers reach this screen on their
+        // own; the copy at this moment may not have them yet.
+        setTimeout(() => this._onPcSaveResultPosted(
+          game.messages?.get(message.id)?.flags?.[MODULE_ID] ?? flags), 200);
       } else {
         // ── Player side ── Another client (the GM, or NPC auto-roll) resolved a
         // PC save. Reflect it on THIS client's copy of the target-list card so the
@@ -3439,13 +3497,23 @@ export class SaveEngine {
   static castLineHtml(casterActor, title, targetNames, { isSpell = true, fallbackImg = null,
       dcText = "", rollers = null, verb = null, dcWhose = undefined } = {}) {
     const who = casterActor?.name ?? "Someone";
-    const img = faceOf(casterActor);
     const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
+    /* ⚠️🔴 THE SPELL'S OWN ICON STANDS IN FOR A PORTRAIT THAT IS NOT THERE (his
+       rule, 2026-10-12: "The header uses Charm Person's own icon, a file that
+       exists."). `fallbackImg` was handed in by every caller and never used, so
+       the Lamia's missing "Lamia 03.png" was drawn as a broken picture. The
+       caster's face still leads; the card's picture guard (chat-render-utils.mjs)
+       swaps in the icon when the face's file fails, and the icon is used outright
+       when the caster has no face at all. */
+    const face = faceOf(casterActor);
+    const img = face || fallbackImg || "";
+    const fallbackAttr = (face && fallbackImg && fallbackImg !== face)
+      ? ` data-ace-fallback="${esc(fallbackImg)}"` : "";
     // ⚠️ THE DC IS ON THE HEADER, AND IT IS THE ROLLERS' TO READ (his card,
     // 2026-09-29: "Header: 'Jeth uses Spiked Chain on Escher · DC 14 Dexterity'" and
     // "Do not hide Lamia's DC 13 on Jeth's Charm card. He is rolling against it.").
     return `<div class="ace-qol-save-cast-line">`
-      + `${img ? `<img class="ace-qol-save-caster-img ace-qol-save-portrait" src="${img}" alt="" />` : ""}`
+      + `${img ? `<img class="ace-qol-save-caster-img ace-qol-save-portrait ace-face" src="${img}"${fallbackAttr} alt="" />` : ""}`
       + `<span class="ace-qol-save-cast-text">`
       + `<strong>${esc(who)}</strong> ${verb ? esc(verb) : (isSpell ? "casts" : "uses")} <strong>${esc(title)}</strong>`
       + `${targetNames ? ` on <strong>${targetNames}</strong>` : ""}`
@@ -3864,7 +3932,7 @@ export class SaveEngine {
     // reversible condition, and the X on its row was a control with no job.
     const _castDealsDamage = Array.isArray(damageTypes) && damageTypes.length > 0
                           && damageTypes.some(t => t && t !== "none");
-    const _castRemoveBtn = (t, title) => _castDealsDamage
+    const _castRemoveBtn = (t, title) => SaveEngine._offersX(null, { dealsDamage: _castDealsDamage })
       ? `<button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}"${title ? ` title="${title}"` : ""}><i class="fas fa-xmark"></i></button>`
       : "";
 
@@ -3873,8 +3941,8 @@ export class SaveEngine {
       return `
       <div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}" data-pc="false"
            style="display:flex;align-items:flex-start;gap:12px;padding:10px 12px;">
-        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img"
-             style="width:46px;height:46px;border-radius:8px;flex-shrink:0;border:1px solid #555;object-fit:cover;" />
+        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-face"
+             style="width:46px;height:46px;border-radius:8px;flex-shrink:0;border:1px solid #555;" />
         <div class="ace-qol-save-tgt-identity" style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:8px;">
             <span class="ace-qol-save-tgt-name" style="flex:1;font-weight:bold;color:#fff;font-size:16px;">${t.name}</span>
@@ -3895,8 +3963,8 @@ export class SaveEngine {
       <div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}" data-pc="true"
            style="display:flex;align-items:flex-start;gap:12px;padding:10px 12px;">
         <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0;">
-          <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img"
-               style="width:46px;height:46px;border-radius:8px;border:1px solid #d4af37;object-fit:cover;" />
+          <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-face"
+               style="width:46px;height:46px;border-radius:8px;border:1px solid #d4af37;" />
           ${_pcDiceBtn(t)}
         </div>
         <div class="ace-qol-save-tgt-identity" style="flex:1;min-width:0;">
@@ -4197,7 +4265,7 @@ export class SaveEngine {
       return `
         <div class="ace-qol-save-target">
           <div class="ace-qol-save-target-header">
-            <img src="${ts.target.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-target-img" />
+            <img src="${ts.target.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-target-img ace-face" />
             <span class="ace-qol-save-target-name">${ts.target.name}</span>
             <span class="ace-qol-save-target-mod">
               ${saveAbility.toUpperCase()} save: +${SaveEngine._targetProfileFor(ts.targetActor, ts)?.saveMod(saveAbility) ?? 0}
@@ -4936,12 +5004,27 @@ export class SaveEngine {
     // (safeShowForRoll uses synchronize=true), so they see themselves roll.
     // Application stays GM-side.
     const rollDmgBtn = el.querySelector?.("[data-action='aceQolRollDamage']");
-    if (rollDmgBtn && !rollDmgBtn.dataset.wired) {
+    /* ⚠️🔴 ONE RESULT, WHOEVER PRESSED IT (his rule, 2026-10-11, the live test:
+       "The player rolled the Fireball. My button was still live. The second
+       press rolled dice for the table and the card did not change. One result.
+       A second press does nothing."). The card itself says its damage is being
+       rolled, so every copy of the button on every screen is dead from then. */
+    if (rollDmgBtn && flags.damageRolling) {
+      rollDmgBtn.disabled = true;
+      rollDmgBtn.removeAttribute("data-action");
+      rollDmgBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling damage...';
+    } else if (rollDmgBtn && !rollDmgBtn.dataset.wired) {
       const _casterIds = flags.casterUserIds ?? [];
       const _mayRoll = game.user.isGM || _casterIds.includes(game.user.id);
       if (_mayRoll) {
         rollDmgBtn.dataset.wired = "1";
         rollDmgBtn.addEventListener("click", async () => {
+          const _now = message.flags?.[MODULE_ID] ?? {};
+          if (_now.damageRolling || _now.phase !== 1 || rollDmgBtn.disabled) {
+            console.log(`${MODULE_ID} | ROLL DAMAGE pressed on a card whose damage is already rolled or `
+              + `rolling; nothing was done (one card, one result).`);
+            return;
+          }
           const stillPending = (message.flags?.[MODULE_ID]?.allResults ?? []).some(r => r.pending);
           if (stillPending) {
             ui.notifications?.warn("ACE QOL — wait for every target to roll their save before rolling damage.");
@@ -5115,49 +5198,68 @@ export class SaveEngine {
     }
 
     // ── Apply All / Undo All ──
+    // ⚠️🔴 THE TWO BUTTONS FOLLOW THE HIT POINTS, BOTH WAYS (his rule, 2026-10-12:
+    // "Undo put the 8 back, and that part is right. The Apply button did not
+    // come back. After undo, Apply is ready again and pressing it applies again.
+    // The hit points and the button stay in step."). Each button was wired once,
+    // for the state the card was in when it was drawn: APPLY got no click at all
+    // on a card already applied, UNDO ended on "UNDONE" for good, and nothing
+    // ever handed APPLY back. Now there is one state, applied or not, kept on
+    // the message, and both buttons are drawn from it on every render and after
+    // every press.
     const applyBtn = el.querySelector?.("[data-action='aceQolApplyDamage']");
     const undoBtn = el.querySelector?.("[data-action='aceQolUndoDamage']");
+    const APPLY_HTML = '<i class="fas fa-heart-crack"></i> APPLY ALL';
+    const UNDO_HTML = '<i class="fas fa-undo"></i> UNDO ALL';
+    const showState = (applied) => {
+      if (applyBtn) {
+        applyBtn.disabled = !!applied;
+        applyBtn.innerHTML = applied ? "APPLIED \u2713" : APPLY_HTML;
+      }
+      if (undoBtn) {
+        undoBtn.disabled = !applied;
+        undoBtn.innerHTML = UNDO_HTML;
+      }
+    };
+    showState(!!flags.applied);
+    let busy = false;
 
     if (applyBtn && !applyBtn.dataset.wired) {
       applyBtn.dataset.wired = "1";
-      if (flags.applied) {
-        applyBtn.disabled = true;
-        applyBtn.textContent = "APPLIED \u2713";
-        // Enable undo since damage was already applied
-        if (undoBtn && !flags.undone) undoBtn.disabled = false;
-      } else {
-        applyBtn.addEventListener("click", async () => {
-          applyBtn.disabled = true;   // prevent double-click before first await
-          try {
-            await this._applyAllSaveDamage(message);
-            applyBtn.textContent = "APPLIED \u2713";
-            await message.setFlag(MODULE_ID, "applied", true);
-            if (undoBtn) { undoBtn.disabled = false; }
-          } catch (err) {
-            console.error(`${MODULE_ID} | _applyAllSaveDamage failed:`, err);
-            applyBtn.disabled = false;   // re-enable so GM can retry
-          }
-        });
-      }
+      applyBtn.addEventListener("click", async () => {
+        if (busy || message.getFlag(MODULE_ID, "applied")) return;
+        busy = true;
+        applyBtn.disabled = true;   // prevent a double click before the first await
+        try {
+          await this._applyAllSaveDamage(message);
+          await message.setFlag(MODULE_ID, "applied", true);
+          showState(true);
+        } catch (err) {
+          console.error(`${MODULE_ID} | _applyAllSaveDamage failed:`, err);
+          showState(!!message.getFlag(MODULE_ID, "applied"));   // so the GM can retry
+        } finally {
+          busy = false;
+        }
+      });
     }
 
     if (undoBtn && !undoBtn.dataset.wired) {
       undoBtn.dataset.wired = "1";
-      if (flags.undone) {
+      undoBtn.addEventListener("click", async () => {
+        if (busy || !message.getFlag(MODULE_ID, "applied")) return;
+        busy = true;
         undoBtn.disabled = true;
-        undoBtn.textContent = "UNDONE \u2713";
-      } else if (!flags.applied) {
-        // Not applied yet — keep disabled (set in HTML)
-      } else {
-        // Was applied but not yet undone — enable it
-        undoBtn.disabled = false;
-        undoBtn.addEventListener("click", async () => {
+        try {
           await this._undoAllSaveDamage(message);
-          undoBtn.disabled = true;
-          undoBtn.textContent = "UNDONE \u2713";
-          await message.setFlag(MODULE_ID, "undone", true);
-        });
-      }
+          await message.setFlag(MODULE_ID, "applied", false);
+          showState(false);
+        } catch (err) {
+          console.error(`${MODULE_ID} | _undoAllSaveDamage failed:`, err);
+          showState(!!message.getFlag(MODULE_ID, "applied"));
+        } finally {
+          busy = false;
+        }
+      });
     }
   }
 
@@ -6089,6 +6191,78 @@ export class SaveEngine {
     return !!r && r.pending !== true && !r.noRoll && r.passed === false;
   }
 
+  /**
+   * The die, every bonus named, and the total, on a save card's damage row.
+   *
+   * ⚠️ THE DIE IS THE TABLE'S, THE BONUS AND TOTAL ARE THE ROLLER'S (his rule,
+   * 2026-10-11), and a party member's own sum is every screen's while a
+   * creature's is the GM's alone (2026-10-12, saveBonusSpan). Named, "+ 1 WIS
+   * + 2 PROF", like every save sum (namedSaveSum).
+   */
+  static _damageRowRoll(r, passClass, opts = {}) {
+    if (r.isAutoFail) return `<span class="ace-qol-save-roll ${passClass}">AUTO</span>`;
+    // ⚠️ THE SAME READER AS THE LINE UNDER IT, so a row cannot show a total
+    // with no picture while the line prints a different sum.
+    const _reading = SaveEngine._rollReadingFor(r, opts);
+    const d20Face = _reading.die;
+    const modifier = (typeof r.saveTotal === "number" && d20Face != null)
+      ? r.saveTotal - d20Face : _reading.used;
+    if (d20Face == null || modifier == null) {
+      return saveBonusSpan(`<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`, r.actorId ?? null);
+    }
+    const modPart = modifier === 0 ? ""
+      : namedSaveSum(_reading.parts, modifier, { who: r.name ?? "", saveBonuses: r.saveBonuses });
+    return `
+            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:7px;font-family:'Signika',sans-serif;">
+              ${aceD20FaceImg(d20Face, { size: 34 })}
+              <span style="color:#ffffff;font-size:18px;font-weight:700;">${d20Face}</span>
+              ${saveBonusSpan(`<span style="color:#b9a978;font-size:15px;">${modPart} =</span>`
+                + ` <span class="${passClass}" style="font-weight:700;font-size:18px;">${r.saveTotal}</span>`, r.actorId ?? null)}
+            </span>`;
+  }
+
+  /** A rolled row that nobody could call a pass or a fail (2026-10-12). */
+  static _unjudged(r) {
+    return !!r && r.pending !== true && !r.noRoll && !r.isAutoFail && !r.verdictText
+      && r.passed !== true && r.passed !== false && !SaveEngine._isImmuneRow(r);
+  }
+
+  /**
+   * Does a resolved row take any damage? Its own share, decided at its save by
+   * the one rule; a row written before rows carried one falls back to the pass
+   * and the half rule. A row still waiting, or one that never rolled, takes
+   * none yet. The card's own "anyone takes damage" test asks this.
+   */
+  static _rowWillTakeDamage(r, halfOnSave = false) {
+    return !!r && !r.pending && !r.noRoll
+      && (typeof r.damageMultiplier === "number" ? r.damageMultiplier > 0 : (!r.passed || !!halfOnSave));
+  }
+
+  /**
+   * Whether a row still offers its X, the button that drops it before its
+   * damage is rolled. ONE answer for every place that draws it.
+   *
+   * His rule, 2026-10-11: "The X stays while the roll is still open, and it
+   * stays on a fail, and it stays when a success still takes half. When the row
+   * resolves and the damage is nothing, the X comes off that row." And from
+   * 2026-09-29: a power that deals no damage has no X at all.
+   *
+   * @param {object|null} r  the row's result, or nothing while it is not rolled
+   */
+  static _offersX(r, { dealsDamage = true, halfOnSave = false } = {}) {
+    if (!dealsDamage) return false;
+    if (!r || r.pending) return true;                       // the roll is still open
+    return SaveEngine._rowWillTakeDamage(r, halfOnSave);
+  }
+
+  /** The results a cast's target list stands for, by token, from its own results card. */
+  static _castResultsByToken(castId) {
+    const card = (game.messages?.contents ?? []).findLast?.(m => m.flags?.[MODULE_ID]?.type === "saveResults"
+      && m.flags[MODULE_ID].castId === castId);
+    const f = card?.flags?.[MODULE_ID] ?? {};
+    return { byToken: new Map((f.allResults ?? []).map(r => [r?.tokenDocId, r])), halfOnSave: !!f.halfOnSave };
+  }
+
   async _rollSingleSave(tgt, saveAbility, saveDC, recipe, casterActorId = null, options = {}) {
     const scene = game.scenes.get(tgt.sceneId) ?? canvas.scene;
     const tokenDoc = scene?.tokens?.get(tgt.tokenDocId);
@@ -6649,7 +6823,7 @@ export class SaveEngine {
         </div>
         <div style="display:flex;align-items:center;gap:15px;padding:15px;background:#0c0c10;">
           <div style="display:flex;flex-direction:column;align-items:center;gap:8px;flex-shrink:0;">
-            <img src="${pcImg}" style="width:54px;height:54px;border-radius:8px;border:1px solid #d4af37;object-fit:cover;" />
+            <img class="ace-face" src="${pcImg}" style="width:54px;height:54px;border-radius:8px;border:1px solid #d4af37;" />
             <button class="ace-qol-btn ace-qol-btn-roll" data-action="aceQolRollPcSave" title="Roll your ${abilityLabel} save"
                     style="background:none;border:none;cursor:pointer;padding:0;display:inline-flex;">
               ${aceD20FaceImg(20, { size: 46, glow: true })}
@@ -6987,6 +7161,12 @@ export class SaveEngine {
             autoFailSave, saveAdvantage, saveDisadvantage, superSaver,
             saveBonuses, targetName, targetImg, castId } = flags;
 
+    // The DC this screen holds for this roll: the prompt's own, which is the
+    // header's DC on the GM's screen and on a party caster's card, and absent on
+    // a player's copy of a creature's (road/verdict.mjs then asks the GM's).
+    const _dcInHand = (saveDC === null || saveDC === undefined || saveDC === ""
+      || !Number.isFinite(Number(saveDC))) ? null : Number(saveDC);
+
     const scene = game.scenes.get(sceneId) ?? canvas.scene;
     const tokenDoc = scene?.tokens?.get(tokenDocId);
     const targetActor = tokenDoc?.actor
@@ -7032,9 +7212,36 @@ export class SaveEngine {
       // "WAITING FOR PLAYER" forever. `node --check` cannot catch this — an
       // undefined identifier is valid syntax and only explodes at runtime.
       // Copy-pasting a line out of _rollSingleSave(tgt, …) is how it got here.
-      const _row = { tokenDocId, sceneId, actorId, name: targetName, saveBonuses };
+      // ⚠️🔴 THE CARD NO LONGER CARRIES A PLAYER'S SAVE BONUSES (his rule,
+      // 2026-10-11: a party member's save row is the die and the word, so
+      // road/table-view.mjs cuts them from every player's copy). Rolled without
+      // them, Bless and Aura of Protection would silently drop off a player's
+      // save. This screen reads them from the creature itself, the same reader
+      // the card was built with, as it already re-measures cover.
+      let _bonuses = Array.isArray(saveBonuses) ? saveBonuses : null;
+      if (!_bonuses) {
+        try {
+          const _caster = game.actors.get(flags.casterActorId) ?? null;
+          const _item = flags.itemUuid ? fromUuidSync(flags.itemUuid) : null;
+          const _tok = tokenDoc?.object ?? null;
+          _bonuses = (_caster && _tok)
+            ? (CombatState.assess(_caster, _tok, _item, { saveAbility: ability, isSpell: !!flags.isSpell })?.saveBonuses ?? [])
+            : null;
+          if (_bonuses === null) {
+            console.warn(`${MODULE_ID} | ${targetName}'s save bonuses could not be read here (`
+              + `${_tok ? "the caster is not known" : "the token is not on the scene this screen is showing"}), `
+              + `so the save is rolled without them.`);
+            _bonuses = [];
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | ${targetName}'s save bonuses could not be read here, so the save is `
+            + `rolled without them:`, err);
+          _bonuses = [];
+        }
+      }
+      const _row = { tokenDocId, sceneId, actorId, name: targetName, saveBonuses: _bonuses };
       const profileMod = SaveEngine._targetProfileFor(targetActor, _row)?.saveMod(ability) ?? 0;
-      const allBonusParts = (saveBonuses ?? []).map(b => b.value);
+      const allBonusParts = _bonuses.map(b => b.value);
 
       /* ⚠️🔴 A PLAYER'S SAVE IS THE SAME SUM AS AN NPC'S. This path had its
          own copy of the cover block and added it to a sheet number that already
@@ -7084,7 +7291,16 @@ export class SaveEngine {
       const roll = new Roll(formula);
       await roll.evaluate();
       saveTotal = roll.total;
-      passed = saveTotal >= saveDC;
+      /* ⚠️🔴 THE SCREEN THAT HOLDS THE DC SAYS PASS OR FAIL (his rule,
+         2026-10-12: "A 20 that totals 31 against DC 13 is a success... The player
+         screen and the GM screen both say pass from the roll that was kept.").
+         A creature's DC is cut from the player's copy of this prompt, so this
+         compared 31 against nothing and wrote FAIL, and the GM's screen
+         corrected it. road/verdict.mjs answers here when this screen has the DC
+         and asks the GM's screen when it does not. Null: nobody could say, and
+         the card shows the die with no word rather than a wrong one. */
+      passed = (await askVerdict({ messageId: message.id ?? null, total: saveTotal,
+        dc: _dcInHand }))?.passed ?? null;
       rollResult = roll;
       if (halflingRerolled(roll)) console.log(`${MODULE_ID} | Luck | ${targetName}'s save came up 1 and was rerolled (halfling luck).`);
 
@@ -7097,22 +7313,35 @@ export class SaveEngine {
         try {
           // ⚠️ No DC in the words (his rule, 2026-10-11): a player is told the save
           // failed, which is what Lucky asks about, not the number it failed against.
-          // ⚠️🔴 A CREATURE'S DC IS NOT ON A PLAYER'S SCREEN (road/table-view.mjs), and
-          // a total judged against nothing is "already a success", so Lucky was never
-          // offered. Without the DC the player decides from the die, as the 2014 feat
-          // reads ("after you roll the die, but before the outcome is determined").
+          // ⚠️🔴 AND ONLY WHEN IT FAILED (his rule, 2026-10-12: "Lucky is one box,
+          // and only when the roll failed. A 20 that totals 31 against DC 13 is a
+          // success. Lucky does not open."). Without the DC this said "fails" for
+          // every roll, so Lucky opened on a 31. The verdict above is the GM's,
+          // whichever screen this is; with no verdict Lucky is not offered, because
+          // nobody can say the roll failed.
           const dcHere = Number.isFinite(Number(saveDC)) && saveDC !== null && saveDC !== "";
+          const rolledTotal = saveTotal;
           const got = await luckOwnRoll({ actor: targetActor, kind: "save",
             what: `${abilityLabel} save`,
             d20s: (roll.dice?.[0]?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result)),
             kept: naturalD20(roll), total: saveTotal,
+            // Without the DC on this screen: what the GM said about the roll, and
+            // anything lower than a failed total fails too; a higher one is not known.
             judge: (t) => dcHere
               ? { fails: t < saveDC, words: `${t >= saveDC ? "saved" : "failed"}` }
-              : { fails: true, words: "the DC is the GM's" },
+              : (passed === false && t <= rolledTotal)
+                ? { fails: true, words: "failed" }
+                : (t === rolledTotal && passed !== null)
+                  ? { fails: !passed, words: passed ? "saved" : "failed" }
+                  : { fails: null, words: "" },
             dice: "ours" });
           if (got.spent) {
             saveTotal = got.total;
-            passed = saveTotal >= saveDC;
+            // The kept die decides it, and the same screen says so.
+            if (saveTotal !== rolledTotal) {
+              passed = (await askVerdict({ messageId: message.id ?? null, total: saveTotal,
+                dc: _dcInHand }))?.passed ?? null;
+            }
             luck = { d20: got.d20, note: got.note };
           }
         } catch (err) {
@@ -7141,9 +7370,11 @@ export class SaveEngine {
     // Road). The GM decides the row's share again from the cast card when the
     // result arrives, because a prompt from before prompts carried one has none.
     const _pcVerdict = whatLands(flags.recipe ?? null,
-      { passed, rolled: [], evasion: !!superSaver, autoFail: !!autoFailSave });
+      { passed: !!passed, rolled: [], evasion: !!superSaver, autoFail: !!autoFailSave });
     const _pcMultiplier = _pcVerdict.share;
-    const resultLabel = _pcVerdict.label;
+    // No verdict: the die, and no word (the GM's screen decides it on arrival).
+    const noWord = passed === null && !autoFailSave;
+    const resultLabel = noWord ? "" : _pcVerdict.label;
 
     const passClass = passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
     const rollDisplay = autoFailSave ? "AUTO" : saveTotal;
@@ -7154,18 +7385,19 @@ export class SaveEngine {
         : `Rolled ${saveTotal} \u2014 FAILED (DC ${saveDC})`;
 
     // Post public result — clean, matches D&D 5e card style
-    const passColor = passed ? "#00e676" : "#ff1744";
+    const passColor = noWord ? "#c9bd94" : passed ? "#00e676" : "#ff1744";
     // Big, black, readable result — d20 face under the portrait + full
     // breakdown (raw +mod = total), matching the DM cards.
     const _bdMod  = (dieResult != null && typeof saveTotal === "number") ? saveTotal - dieResult : null;
-    const _bdSign = (_bdMod != null && _bdMod >= 0) ? "+" : "";
-    const _bdPart = (_bdMod != null && _bdMod !== 0) ? ` ${_bdSign}${_bdMod}` : "";
+    // Every bonus named, "+ 1 WIS + 2 PROF" (his rule, 2026-10-12).
+    const _bdPart = (_bdMod != null && _bdMod !== 0)
+      ? namedSaveSum(_parts, _bdMod, { who: targetName ?? "", saveBonuses }) : "";
     const _faceHtml = autoFailSave ? "" : aceD20FaceImg(dieResult, { size: 44, glow: true });
     const resultHtml = `
       <div class="ace-qol-save-pc-result-card" style="background:#0c0c10;border:1px solid #d4af37;border-radius:9px;overflow:hidden;font-family:'Signika',sans-serif;">
         <div style="display:flex;align-items:center;gap:14px;padding:14px;">
           <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0;">
-            <img src="${targetImg || "icons/svg/mystery-man.svg"}" style="width:50px;height:50px;border-radius:8px;border:1px solid #d4af37;object-fit:cover;" />
+            <img class="ace-face" src="${targetImg || "icons/svg/mystery-man.svg"}" style="width:50px;height:50px;border-radius:8px;border:1px solid #d4af37;" />
             ${_faceHtml}
           </div>
           <div style="flex:1;min-width:0;">
@@ -7174,10 +7406,11 @@ export class SaveEngine {
               ${autoFailSave
                 ? `<span style="color:${passColor};font-weight:700;font-size:18px;">AUTO-FAIL</span>`
                 : `<span style="color:#fff;font-size:20px;font-weight:700;">${dieResult ?? "?"}</span>`
-                  // The bonus and the total are this creature's (his rule, 2026-10-11).
-                  + bonusSpan(`<span style="color:#b9a978;font-size:15px;">${_bdPart} =</span>
+                  // The bonus and the total are this creature's (his rule, 2026-10-11),
+                  // and a party member's own are the table's (2026-10-12).
+                  + saveBonusSpan(`<span style="color:#b9a978;font-size:15px;">${_bdPart} =</span>
                    <span style="color:${passColor};font-size:20px;font-weight:700;">${saveTotal}</span>`, actorId ?? null)}
-              <span style="margin-left:4px;padding:2px 9px;border-radius:5px;background:${passed ? 'rgba(0,230,118,0.15)' : 'rgba(255,23,68,0.15)'};color:${passColor};font-weight:700;font-size:15px;">${resultLabel}</span>
+              ${noWord ? "" : `<span style="margin-left:4px;padding:2px 9px;border-radius:5px;background:${passed ? 'rgba(0,230,118,0.15)' : 'rgba(255,23,68,0.15)'};color:${passColor};font-weight:700;font-size:15px;">${resultLabel}</span>`}
             </div>
             ${luck?.note ? `<div style="margin-top:6px;color:#7fd08a;font-size:15px;line-height:1.3;"><i class="fas fa-clover"></i> ${foundry.utils.escapeHTML(String(luck.note))}</div>` : ""}
           </div>
@@ -7231,8 +7464,10 @@ export class SaveEngine {
     });
 
     // ── Emit saveComplete hook for PC save (duration tracker isSave expiry) ──
+    // ⚠️ Not without a verdict: a signal that says "failed" for a roll nobody
+    // judged would act on a guess. The GM's screen sends it when it judges.
     try {
-      if (targetActor) {
+      if (targetActor && passed !== null) {
         await SignalDoor.send("saveComplete", { actor: targetActor, tokenDocId,
           saveAbility, passed, itemUuid: flags.itemUuid ?? null,
           activityId: flags.activityId ?? null });
@@ -7326,7 +7561,8 @@ export class SaveEngine {
         passed = judged;
       } else {
         console.warn(`${MODULE_ID} | no DC is on this screen for cast ${resultFlags.castId}, so the roller's `
-          + `own verdict (${passed ? "saved" : "failed"}) stands.`);
+          + `own verdict stands: ${passed === true ? "saved" : passed === false ? "failed"
+            : "none, so this save stays unjudged and nothing is applied for it"}.`);
       }
     }
 
@@ -7433,7 +7669,8 @@ export class SaveEngine {
     }
     {
 
-      const passClass = pcResult.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
+      const unjudged = pcResult.passed == null && !pcResult.autoFailSave;
+      const passClass = unjudged ? "ace-qol-save-neutral" : pcResult.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       // ⚠️🔴 THE PC ROW THREW THE REASON AWAY. This read
       // `passed ? "PASS" : "FAIL"` and nothing else, so a player who took an
       // unexpected amount of damage got no explanation at all - while the NPC
@@ -7448,7 +7685,7 @@ export class SaveEngine {
       // ⚠️ PREFER THE LABEL THE ENGINE ALREADY BUILT, and only compose one
       // if it is genuinely absent - two places deciding the same wording is how
       // they drift apart.
-      const verdictText = pcResult.resultLabel
+      const verdictText = unjudged ? "" : pcResult.resultLabel
         ?? (pcResult.passed
               ? (pcResult.superSaver ? "PASS (EVASION)" : "PASS")
               : (pcResult.superSaver ? "FAIL (EVASION: HALF)" : "FAIL"));
@@ -7469,6 +7706,13 @@ export class SaveEngine {
         rollBtn.style.background = "none";
         rollBtn.style.border = "none";
         rollBtn.style.padding = "0 4px";
+      }
+
+      // The row has resolved: its X goes if it took nothing (SaveEngine._offersX,
+      // his rule, 2026-10-11). The share is the GM's own judgment, on this result.
+      // Without the share there is no telling a half from a nothing, so it stays.
+      if (typeof pcResult.damageMultiplier === "number" && !SaveEngine._offersX({ ...pcResult, pending: false })) {
+        row.querySelector(".ace-qol-save-tgt-remove")?.remove();
       }
 
       // ── Bottom action button reconciliation + template auto-delete ──
@@ -8306,6 +8550,12 @@ export class SaveEngine {
     // "Brief Enfeeblement"), so a card with no failures may still have work.
     const passedResults = results.filter(r => r?.passed === true && !r?.pending && !r?.noRoll);
     const successLands = copySuccess.length > 0 || successConditions.length > 0;
+    const unjudgedRows = results.filter(r => SaveEngine._unjudged(r));
+    if (unjudgedRows.length) {
+      console.warn(`${MODULE_ID} | ${item.name}: ${unjudgedRows.map(r => r.name).join(", ")} rolled `
+        + `${unjudgedRows.map(r => r.saveTotal ?? "?").join(", ")} and no pass or fail was decided, so `
+        + `nothing is applied for ${unjudgedRows.length === 1 ? "it" : "them"}. A missing verdict is not a resist.`);
+    }
     if (!failed.length && !(successLands && passedResults.length)) {
       console.log(`${MODULE_ID} | ${item.name}: no resolved failed saves — no conditions to apply`);
       return applied;
@@ -9092,7 +9342,7 @@ export class SaveEngine {
         return `
           <div class="ace-qol-save-result-row ace-qol-save-result-pending ace-qol-save-await" data-token-doc-id="${r.tokenDocId}">
             <div class="ace-qol-save-result-target">
-              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-qol-save-portrait" />
+              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-qol-save-portrait ace-face" />
               <span class="ace-qol-save-tgt-name">${r.name}</span>
               <button type="button" class="ace-qol-save-await-roll" data-action="aceQolRollMySave"
                       data-token-doc-id="${r.tokenDocId}" data-owner-online="${r.ownerOnline === false ? "false" : "true"}"
@@ -9109,7 +9359,7 @@ export class SaveEngine {
       // the backdrop take the leftover, so a creature is recognisable.
       // ⚠️ AN EMPTY SQUARE, NOT SOMEBODY ELSE'S PICTURE (his rule).
       const portrait = r.img
-        ? `<img src="${r.img}" class="ace-qol-save-tgt-img ace-qol-save-portrait" />`
+        ? `<img src="${r.img}" class="ace-qol-save-tgt-img ace-qol-save-portrait ace-face" />`
         : "";
 
       // ── GATED — no die was thrown (2026-08-06, ONE_GATE phase 0) ──────────
@@ -9180,8 +9430,10 @@ export class SaveEngine {
         const modifier = (typeof r.saveTotal === "number" && d20Face != null)
           ? r.saveTotal - d20Face : _reading.used;
         if (d20Face != null && modifier != null) {
-          // A bonus of nothing says nothing rather than "+ 0".
-          const modPart = modifier === 0 ? "" : ` ${modifier >= 0 ? "+" : "−"} ${Math.abs(modifier)}`;
+          // A bonus of nothing says nothing rather than "+ 0"; every other one is
+          // named, "+ 1 WIS + 2 PROF" (his rule, 2026-10-12).
+          const modPart = modifier === 0 ? ""
+            : namedSaveSum(_reading.parts, modifier, { who: r.name ?? "", saveBonuses: r.saveBonuses });
           d20El = aceD20FaceImg(d20Face, { size: 40 });
           /* ⚠️🔴 THE DIE IS THE TABLE'S, THE BONUS BELONGS TO WHO ROLLED IT (his
              rule, 2026-10-06: "A character saving against a creature: they see his
@@ -9193,9 +9445,11 @@ export class SaveEngine {
              creature. The total goes with the bonus because a face of 14 beside a
              total of 21 states the bonus as plainly as the chip does. */
           const _rowWhose = r.actorId ?? null;
+          // ⚠️ THE ROLLER'S, NOT A d20's (2026-10-12): a party member's own sum is
+          // on every copy of the card, a creature's on the GM's alone.
           mathLine = `<span class="ace-qol-save-math">`
             + `<span class="ace-qol-save-math-die">${d20Face}</span>`
-            + bonusSpan(`<span class="ace-qol-save-math-mod">${modPart} = </span>`
+            + saveBonusSpan(`<span class="ace-qol-save-math-mod">${modPart} = </span>`
               + `<span class="${passClass} ace-qol-save-math-total">${r.saveTotal}</span>`, _rowWhose)
             + `</span>`;
         } else {
@@ -9302,11 +9556,12 @@ export class SaveEngine {
     // ── LINES 3 AND 4: one row per creature, and what landed under it ─────
     //
     // The X belongs to this card's handler, and it drops a target before its damage
-    // is rolled - so it is offered only where there is damage still to roll.
+    // is rolled - so it is offered only where there is damage still to roll, and
+    // it comes off a row that has resolved to nothing (SaveEngine._offersX).
     const _landedByToken = Object.fromEntries((appliedConditions ?? [])
       .filter(a => a?.tokenDocId).map(a => [a.tokenDocId, a]));
     const targetRows = results.map(r => SaveEngine.saveResultRowHtml(r, { ...opts,
-      canRemove: hasDamage === true,
+      canRemove: SaveEngine._offersX(r, { dealsDamage: hasDamage === true, halfOnSave }),
       formulaOnShell: _rollers.length === 1,
       landedByToken: _landedByToken })).join("");
 
@@ -9330,8 +9585,7 @@ export class SaveEngine {
     // result instead of a ROLL DAMAGE / APPLY ALL card.
     // Each row's own share, decided at its save by the one rule. A card written
     // before rows carried one falls back to the pass and the half rule.
-    const anyWillTakeDamage = hasDamage && results.some(r => !r.pending && !r.noRoll
-      && (typeof r.damageMultiplier === "number" ? r.damageMultiplier > 0 : (!r.passed || halfOnSave)));
+    const anyWillTakeDamage = hasDamage && results.some(r => SaveEngine._rowWillTakeDamage(r, halfOnSave));
     let actionsHtml;
     if (hasDamage && anyPending) {
       actionsHtml = `<div class="ace-qol-dmg-actions ace-qol-roll-dmg-gate">
@@ -9440,6 +9694,11 @@ export class SaveEngine {
       // That is a claim about a FINISHED set; don't make it until it is one.
       const anyPending   = (results ?? []).some(r => r?.pending);
       const anyoneFailed = (results ?? []).some(r => SaveEngine._failedTheSave(r));
+      // ⚠️🔴 A MISSING VERDICT IS NOT A RESIST (his rule, 2026-10-12: "An empty
+      // resolved list is not 'all targets resisted' when a row on that cast
+      // already says FAIL."). A rolled row with no pass and no fail counted as
+      // not failed, so this said "All targets resisted" over Virric's 10 against 13.
+      const unjudged = (results ?? []).filter(r => SaveEngine._unjudged(r));
       if (anyPending) {
         const n = (results ?? []).filter(r => r?.pending).length;
         actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:6px 12px;text-align:center;color:#b9a978;font-size:11px;font-style:italic;">
@@ -9466,6 +9725,10 @@ export class SaveEngine {
         actionsHtml = (handedOff || !who.length) ? "" : SaveEngine._gmReasonLine(
           `${who.join(", ")} failed, and nothing recorded what happened to `
           + `${who.length === 1 ? "it" : "them"}. The console has the details.`);
+      } else if (unjudged.length) {
+        actionsHtml = SaveEngine._gmReasonLine(
+          `${unjudged.map(r => String(r?.name ?? "a target")).join(", ")}: no pass or fail could be `
+          + `decided, so nothing was applied. The console has the details.`);
       } else {
         actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:6px 12px;text-align:center;color:#88c878;font-size:11px;font-style:italic;">
           <i class="fas fa-shield-halved"></i> All targets resisted
@@ -9792,7 +10055,17 @@ export class SaveEngine {
 
   async _completeSaveResultsPhase2(message) {
     const flags = message.flags?.[MODULE_ID];
-    if (!flags || flags.phase !== 1) return;
+    if (!flags || flags.phase !== 1) {
+      console.log(`${MODULE_ID} | this card's damage was already rolled; a second press does nothing.`);
+      return;
+    }
+    // ⚠️🔴 ONE RESULT, WHOEVER PRESSED IT (his rule, 2026-10-11, the live test).
+    // The card says so before a die is thrown (below), so a press from any
+    // screen, or a player's request arriving by socket, stops here.
+    if (flags.damageRolling) {
+      console.log(`${MODULE_ID} | this card's damage is already being rolled; a second press does nothing.`);
+      return;
+    }
 
     // ⚠️🔴 ONE DAMAGE ROLL PER CARD (his table, 2026-09-19, the Magmin at
     // 23:47): the burst rolled its own fire when Aryel's save landed, and the
@@ -9809,10 +10082,29 @@ export class SaveEngine {
       return;
     }
     this._rollingDamage.add(message.id);
+    let landed = false;
     try {
-      return await this._rollPhase2Damage(message, flags);
+      // Every copy of ROLL DAMAGE dies before a die is thrown: the card itself
+      // says its damage is being rolled, and every screen redraws it dead.
+      await message.update({ [`flags.${MODULE_ID}.damageRolling`]: true });
+      await this._rollPhase2Damage(message, flags);
+      landed = message.flags?.[MODULE_ID]?.phase === 2;
+      if (!landed) {
+        // ⚠️ SILENCE IS A BUG: rolled or not, the card did not become its result.
+        console.warn(`${MODULE_ID} | the damage step for this card ended without changing the card `
+          + `(see any message above). Its ROLL DAMAGE is live again.`);
+        ui.notifications?.warn("ACE: that card's damage step ended without a result. Its ROLL DAMAGE is live again; see the console.");
+      }
+    } catch (err) {
+      console.error(`${MODULE_ID} | the damage roll for this card failed, so the card has no result:`, err);
+      ui.notifications?.error(`ACE: the damage roll failed (${err?.message ?? err}). Its ROLL DAMAGE is live again; see the console.`);
     } finally {
       this._rollingDamage.delete(message.id);
+      // No result: the button comes back, so the one result can still be made.
+      if (!landed && message.flags?.[MODULE_ID]?.damageRolling) {
+        try { await message.update({ [`flags.${MODULE_ID}.-=damageRolling`]: null }); }
+        catch (err) { console.warn(`${MODULE_ID} | could not bring ROLL DAMAGE back on this card:`, err); }
+      }
     }
   }
 
@@ -9994,29 +10286,37 @@ export class SaveEngine {
       ].filter(Boolean).join("");
       return `<div class="ace-qol-save-tgt-actions">${dice}${badges}</div>`;
     };
+    // ⚠️ NOT AN X ON EVERY ROW (his rule, 2026-10-11: "The later rebuild that
+    // always stamps an X does not put one back on a row that has already taken
+    // nothing."). The same answer as the two builders, read against what the
+    // cast's results card says each row came to.
+    const _dealsDamage = Array.isArray(flags.damageTypes) && flags.damageTypes.some(t => t && t !== "none");
+    const _cast = SaveEngine._castResultsByToken(message.id);
+    const xFor = (t, title = "") => SaveEngine._offersX(_cast.byToken.get(t.tokenDocId) ?? null,
+      { dealsDamage: _dealsDamage, halfOnSave: _cast.halfOnSave || !!flags.halfOnSave })
+      ? `<button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}"${title ? ` title="${title}"` : ""}><i class="fas fa-xmark"></i></button>`
+      : "";
     const buildNpcRow = (t) => {
       const di = dmgInd(t);
       return `<div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}" data-pc="false">
-        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-face" />
         <div class="ace-qol-save-tgt-identity">
           <span class="ace-qol-save-tgt-name">${t.name}</span>
           ${/* the bonus is this creature's (his rule, 2026-10-11) */ bonusSpan(`<span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>`, t.actorId ?? null)}
         </div>
-        <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}"><i class="fas fa-xmark"></i></button>
+        ${xFor(t)}
         ${buildActionsRow(t, false)}
       </div>`;
     };
     const buildPcRow = (t) => {
       const di = dmgInd(t);
       return `<div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}" data-pc="true">
-        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-face" />
         <div class="ace-qol-save-tgt-identity">
           <span class="ace-qol-save-tgt-name">${t.name}</span>
           ${/* the bonus is this creature's (his rule, 2026-10-11) */ bonusSpan(`<span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>`, t.actorId ?? null)}
         </div>
-        <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}" title="Remove this PC from the save list">
-          <i class="fas fa-xmark"></i>
-        </button>
+        ${xFor(t, "Remove this PC from the save list")}
         ${buildActionsRow(t, true)}
       </div>`;
     };
@@ -10250,8 +10550,8 @@ export class SaveEngine {
         return `
           <div class="ace-qol-save-result-row ace-qol-save-result-noroll" data-token-doc-id="${r.tokenDocId}" style="opacity:0.9;">
             <div class="ace-qol-save-result-target">
-              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-              <span class="ace-qol-save-tgt-name" style="white-space:nowrap;">${foundry.utils.escapeHTML(r.name ?? "")}</span>
+              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-qol-save-portrait ace-face" />
+              <span class="ace-qol-save-tgt-name" style="overflow-wrap:anywhere;">${foundry.utils.escapeHTML(r.name ?? "")}</span>
               <span style="display:inline-flex;align-items:center;gap:6px;color:${tone.colour};font-weight:700;letter-spacing:0.5px;">
                 <i class="fas ${tone.icon}"></i>${foundry.utils.escapeHTML(r.noRollLabel ?? "")}
               </span>
@@ -10263,34 +10563,9 @@ export class SaveEngine {
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       const verdictText = r.passed ? "PASS" : "FAIL";
 
-      // Dice breakdown — d20 face large + bright, modifier muted, total pass/fail colour.
-      // Uses dieResult (persisted in flags) so the Phase 2 rebuild never loses the die face.
-      let rollDisplay;
-      if (r.isAutoFail) {
-        rollDisplay = `<span class="ace-qol-save-roll ${passClass}">AUTO</span>`;
-      } else {
-        // ⚠️ THE SAME READER AS THE LINE UNDER IT, so a row cannot show a total
-        // with no picture while the line prints a different sum.
-        const _reading = SaveEngine._rollReadingFor(r, opts);
-        const d20Face = _reading.die;
-        const modifier = (typeof r.saveTotal === "number" && d20Face != null)
-          ? r.saveTotal - d20Face : _reading.used;
-        if (d20Face != null && modifier != null) {
-          const modSign = modifier >= 0 ? "+" : "";
-          const modPart = modifier === 0 ? "" : ` ${modSign}${modifier}`;
-          // ⚠️ THE DIE IS THE TABLE'S, THE BONUS AND TOTAL ARE THE ROLLER'S (his
-          // rule, 2026-10-11), as on the phase-1 row this redraws.
-          rollDisplay = `
-            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:7px;font-family:'Signika',sans-serif;">
-              ${aceD20FaceImg(d20Face, { size: 34 })}
-              <span style="color:#ffffff;font-size:18px;font-weight:700;">${d20Face}</span>
-              ${bonusSpan(`<span style="color:#b9a978;font-size:15px;">${modPart} =</span>`
-                + ` <span class="${passClass}" style="font-weight:700;font-size:18px;">${r.saveTotal}</span>`, r.actorId ?? null)}
-            </span>`;
-        } else {
-          rollDisplay = bonusSpan(`<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`, r.actorId ?? null);
-        }
-      }
+      // Dice breakdown: the die, every bonus named, the total (one builder for
+      // both damage-row cards, 2026-10-12).
+      const rollDisplay = SaveEngine._damageRowRoll(r, passClass, opts);
 
       // ── Calculate per-target damage ── (the same reading APPLY ALL lands)
       const { finals, total: targetDamage } = SaveEngine._damageForRow(r, damageComponents, recipe);
@@ -10335,21 +10610,27 @@ export class SaveEngine {
       // don't get squished into a vertical "Dea/th/Kni/ght" stack next to
       // the dice readout.
       return `
-        <div class="ace-qol-save-result-row ${nameClass}" data-token-doc-id="${r.tokenDocId}"
-             style="padding:8px 10px;border-bottom:1px solid rgba(212,175,55,0.15);">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img"
-                 style="width:24px;height:24px;border-radius:50%;flex-shrink:0;border:1px solid #444;" />
-            <span class="ace-qol-save-tgt-name"
-                  style="flex:1;font-weight:bold;color:#fff;font-size:14px;line-height:1.2;">${r.name}</span>
+        <!-- ⚠️🔴 THE SAVE CARD'S OWN ROW (his rule, 2026-10-12: "Both cards use the
+             same square portrait the save card uses. Not a circle, and not cropped...
+             The row is crushed. The name, the dice and the buttons have to be
+             readable... Do not rebuild the card."). This row drew a 24px circle and
+             a name that could not wrap, beside dice indented under it by hand. The
+             portrait-and-name line and the dice-and-verdict line are now the phase-1
+             row's own (saveResultRowHtml: .ace-qol-save-row-who and
+             .ace-qol-save-row-result), so one creature looks the same before and
+             after its damage is rolled. The buttons and the hit points under them
+             are unchanged. -->
+        <div class="ace-qol-save-result-row ace-qol-save-row ${nameClass}" data-token-doc-id="${r.tokenDocId}">
+          <div class="ace-qol-save-row-who">
+            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-qol-save-portrait ace-face" />
+            <span class="ace-qol-save-tgt-name">${r.name}</span>
             ${inlineBadge}
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;padding-left:32px;gap:8px;">
-            <span style="flex:1;">${rollDisplay}</span>
-            <span class="ace-qol-save-verdict ${passClass}"
-                  style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
+          <div class="ace-qol-save-row-result">
+            ${rollDisplay}
+            <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
           </div>
-          ${SaveEngine._advTagsHtml(r, { indent: 32 })}
+          ${SaveEngine._advTagsHtml(r)}
           <!-- ⚠️🔴 THE BUTTONS ARE THE GM HALF (his rule, 2026-10-06: "It
                does not see Apply, or the quarter, half, 1, and 2 buttons."). One
                card: the dice and the damage above are the table's, this row is
@@ -10645,7 +10926,9 @@ export class SaveEngine {
       if (r.pending) return SaveEngine.saveResultRowHtml(r, opts);
 
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
-      const rollDisplay = r.isAutoFail ? "AUTO" : r.saveTotal;
+      // ⚠️ A BARE TOTAL WAS ALL THIS CARD SHOWED (2026-10-12): no die and no named
+      // bonus. It draws the same die and sum as the other damage card.
+      const rollDisplay = SaveEngine._damageRowRoll(r, passClass, opts);
 
       // ── Per-target damage: the same reading the damage card and APPLY ALL use ──
       const { finals, total: targetDamage } = SaveEngine._damageForRow(r, damageComponents, recipe);
@@ -10733,21 +11016,27 @@ export class SaveEngine {
       // don't get squished into a vertical "Dea/th/Kni/ght" stack next to
       // the dice readout.
       return `
-        <div class="ace-qol-save-result-row ${nameClass}" data-token-doc-id="${r.tokenDocId}"
-             style="padding:8px 10px;border-bottom:1px solid rgba(212,175,55,0.15);">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img"
-                 style="width:24px;height:24px;border-radius:50%;flex-shrink:0;border:1px solid #444;" />
-            <span class="ace-qol-save-tgt-name"
-                  style="flex:1;font-weight:bold;color:#fff;font-size:14px;line-height:1.2;">${r.name}</span>
+        <!-- ⚠️🔴 THE SAVE CARD'S OWN ROW (his rule, 2026-10-12: "Both cards use the
+             same square portrait the save card uses. Not a circle, and not cropped...
+             The row is crushed. The name, the dice and the buttons have to be
+             readable... Do not rebuild the card."). This row drew a 24px circle and
+             a name that could not wrap, beside dice indented under it by hand. The
+             portrait-and-name line and the dice-and-verdict line are now the phase-1
+             row's own (saveResultRowHtml: .ace-qol-save-row-who and
+             .ace-qol-save-row-result), so one creature looks the same before and
+             after its damage is rolled. The buttons and the hit points under them
+             are unchanged. -->
+        <div class="ace-qol-save-result-row ace-qol-save-row ${nameClass}" data-token-doc-id="${r.tokenDocId}">
+          <div class="ace-qol-save-row-who">
+            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-qol-save-portrait ace-face" />
+            <span class="ace-qol-save-tgt-name">${r.name}</span>
             ${inlineBadge}
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;padding-left:32px;gap:8px;">
-            <span style="flex:1;">${rollDisplay}</span>
-            <span class="ace-qol-save-verdict ${passClass}"
-                  style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
+          <div class="ace-qol-save-row-result">
+            ${rollDisplay}
+            <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
           </div>
-          ${SaveEngine._advTagsHtml(r, { indent: 32 })}
+          ${SaveEngine._advTagsHtml(r)}
           <!-- ⚠️🔴 THE BUTTONS ARE THE GM HALF (his rule, 2026-10-06: "It
                does not see Apply, or the quarter, half, 1, and 2 buttons."). One
                card: the dice and the damage above are the table's, this row is
@@ -10917,11 +11206,10 @@ export class SaveEngine {
       const cacheKey = `${message.id}|${r.tokenDocId}`;
       const cachedValue = SaveEngine.overrideCache.get(cacheKey);
 
-      // Skip removed targets
-      if (cachedValue === "removed") {
-        SaveEngine.overrideCache.delete(cacheKey);
-        continue;
-      }
+      // Skip removed targets. ⚠️ The GM's choices stay on the card after an APPLY
+      // (2026-10-12): an UNDO and a second APPLY land the same ×, ¼, ½, 1 or 2
+      // that the row still shows, not the default.
+      if (cachedValue === "removed") continue;
 
       // What lands, by type. The GM's override is a multiplier on the rolled
       // total, ahead of resistances, exactly as the card shows it.
@@ -10966,9 +11254,6 @@ export class SaveEngine {
         tokenDocId: r.tokenDocId, item: sourceItem, source: sourceActor, label: "save-apply-all",
       });
       hpDelta[r.tokenDocId] = (Number(hpDelta[r.tokenDocId]) || 0) + (Number(landed?.hpDelta) || 0);
-
-      // Clear cache entry after applying
-      SaveEngine.overrideCache.delete(cacheKey);
     }
 
     try { await message.update({ [`flags.${MODULE_ID}.hpDelta`]: hpDelta }, { render: false }); }

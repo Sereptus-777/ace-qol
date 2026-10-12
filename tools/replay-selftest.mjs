@@ -8145,19 +8145,31 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       const activity = cast(caster, fireball);
       activity.uuid = "Actor.p6b-c12.Item.it-Fireball.Activity.iii";
 
-      const { AceFX } = await import(`${MODULE}/scripts/ace-fx.mjs`);
+      // ⚠️ MOVED 2026-10-11. This asked ACE's cast flourish, which is gone (his
+      // rule that day: "A spell's sound and its animation fire once, at the
+      // cast... A countered spell still plays nothing."). The cast's one clip is
+      // AnimationHelper.play now, started the moment the picker answers, so the
+      // same question is asked of it: past the counter's answer it goes looking
+      // for the caster's token, and for a dead cast it never gets that far.
+      const { AnimationHelper } = await import(`${MODULE}/scripts/spell-pipeline/animation.mjs`);
+      let reached = 0;
+      const keepTokens = caster.getActiveTokens;
+      caster.getActiveTokens = () => { reached += 1; return []; };
 
       // Alive: it plays.
       ReactionEngine._createCastBarrier(activity);
       ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_reactors_available" });
-      const alivePlays = !(await quiet(() => AceFX._castWasStopped(activity, fireball, caster)));
+      await quiet(() => AnimationHelper.play({ activity, item: fireball, actor: caster, entry: null }, {}));
+      const alivePlays = reached === 1;
 
       // Dead: it does not.
       const deadCast = cast(caster, fireball);
       deadCast.uuid = "Actor.p6b-c12.Item.it-Fireball.Activity.jjj";
       ReactionEngine._markCastCounterspelled(deadCast);
-      const deadSilent = await quiet(() => AceFX._castWasStopped(deadCast, fireball, caster));
-      check("YES = NO BOOM: ACE's own flourish asks first, plays for a cast that lived and nothing at all for one that did not (2026-09-17)",
+      await quiet(() => AnimationHelper.play({ activity: deadCast, item: fireball, actor: caster, entry: null }, {}));
+      const deadSilent = reached === 1;
+      caster.getActiveTokens = keepTokens;
+      check("YES = NO BOOM: the cast's one clip asks first, plays for a cast that lived and nothing at all for one that did not (2026-09-17, moved 2026-10-11)",
         alivePlays === true && deadSilent === true,
         `a cast nobody countered: ${alivePlays ? "plays" : "silent (wrong)"}; a countered one: ${deadSilent ? "silent" : "still plays (wrong)"}`);
 

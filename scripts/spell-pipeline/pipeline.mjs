@@ -1127,10 +1127,15 @@ export class SpellPipeline {
     // Commit slot now that we have confirmed targets
     await SpellPipeline._commitSlotIfDeferred(ctx.activity, ctx.castLevel);
 
-    await route.run(ctx, result);
+    // ⚠️🔴 THE CAST'S ONE CLIP PLAYS AT THE CAST (his rule, 2026-10-11: "A spell's
+    // sound and its animation fire once, at the cast. They do not fire when
+    // somebody rolls a save."). It played after the resolver, which for a save
+    // spell is after the saves. The targets are known the moment the picker
+    // answers, so it starts here, alongside the spell, and does not hold it up.
+    AnimationHelper.play(ctx, result)
+      .catch(err => console.warn(`${MODULE_ID} | the cast's clip could not play (the spell is unaffected):`, err));
 
-    // Trigger AA on the resolved targets (after damage card so trajectory lands right)
-    await AnimationHelper.play(ctx, result);
+    await route.run(ctx, result);
 
     // ── Clear targets 1.5s after damage card (mirrors v0.7.17 cleanup) ──
     // AA needs ~1s to finish its trajectory; we leave targets set during that

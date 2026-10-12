@@ -521,7 +521,7 @@ export class LootEngine {
     return `
 <div class="ace-qol-loot-card" data-actor-id="${actorId}">
   <div class="ace-qol-loot-header">
-    <img src="${actorImg}" class="ace-qol-loot-portrait">
+    <img src="${actorImg}" class="ace-qol-loot-portrait ace-face">
     <span class="ace-qol-loot-name">${foundry.utils.escapeHTML(actorName)}</span>
     <span class="ace-qol-loot-verb" style="margin-left:auto;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8c7a4b;">${foundry.utils.escapeHTML(framing.verb)}</span>
   </div>
@@ -830,7 +830,7 @@ export class LootEngine {
       const content = `
 <div class="ace-qol-loot-card" data-actor-id="${actorId}">
   <div class="ace-qol-loot-header">
-    <img src="${actorImg}" class="ace-qol-loot-portrait">
+    <img src="${actorImg}" class="ace-qol-loot-portrait ace-face">
     <span class="ace-qol-loot-name">${actorName}</span>
     <span class="ace-qol-loot-verb" style="margin-left:auto;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8c7a4b;">${foundry.utils.escapeHTML(framing.verb)}</span>
   </div>

@@ -299,7 +299,7 @@ export class BuffResolver {
     const accent = "#c9a76b";
     const targetRows = applied.map(c => `
       <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:rgba(201,167,107,0.08);border-radius:4px;margin-bottom:3px;min-width:0;">
-        <img src="${c.img || "icons/svg/mystery-man.svg"}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid #6b5230;flex-shrink:0;" />
+        <img class="ace-face" src="${c.img || "icons/svg/mystery-man.svg"}" style="width:32px;height:32px;border-radius:50%;border:1px solid #6b5230;flex-shrink:0;" />
         <span style="flex:1 1 auto;min-width:0;color:#e8d49a;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${c.name}</span>
         <i class="fas fa-check" style="color:#7ec97e;font-size:14px;flex-shrink:0;"></i>
       </div>

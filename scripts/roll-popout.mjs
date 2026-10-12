@@ -151,7 +151,7 @@ class RollPopoutApp extends AppV2 {
   async _renderHTML() {
     const s = this.spec;
     const portrait = (img, name) => img
-      ? `<img class="acp-portrait" src="${esc(img)}" alt="${esc(name)}" />`
+      ? `<img class="acp-portrait ace-face" src="${esc(img)}" alt="${esc(name)}" />`
       : `<span class="acp-portrait" style="display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;">${esc(String(name ?? "?").charAt(0))}</span>`;
     const scene = s.sourceName
       ? `<div class="acp-scene">

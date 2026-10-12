@@ -1248,9 +1248,9 @@ export class FireEngine {
       const mins = Math.max(1, Math.round(Math.abs(seconds) / 60));
       const rows = burning.map(d => `
         <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;">
-          <img src="${d.actor?.img || d.texture?.src || ""}" alt=""
+          <img class="ace-face" src="${d.actor?.img || d.texture?.src || ""}" alt=""
                style="width:34px;height:34px;border-radius:6px;border:1px solid #5b5241;
-                      object-fit:contain;background:#14120e;flex-shrink:0;">
+                      background:#14120e;flex-shrink:0;">
           <span style="font-size:16px;color:#f0e4c0;">${esc(d.name)}</span>
         </div>`).join("");
 

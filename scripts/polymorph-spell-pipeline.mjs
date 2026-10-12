@@ -541,7 +541,7 @@ export class PolymorphSpellPipeline {
         const img = e.img || "icons/svg/mystery-man.svg";
         return `
           <div class="ace-qol-poly-card" data-entry-idx="${i}">
-            <img src="${escapeHtml(img)}" alt="${escapeHtml(e.name)}" />
+            <img class="ace-face" src="${escapeHtml(img)}" alt="${escapeHtml(e.name)}" />
             <div class="ace-qol-poly-name">${escapeHtml(e.name)}</div>
             <div class="ace-qol-poly-cr">CR ${fmtCr(e.cr)}</div>
           </div>`;

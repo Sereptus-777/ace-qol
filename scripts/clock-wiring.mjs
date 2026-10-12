@@ -234,10 +234,20 @@ export class ClockWiring {
         in the ACE QOL settings.</div>`);
     }
 
+    // ⚠️ THE SAME BLACK CARD AS "A NEW DAY" (his rule, 2026-10-11: "It has no
+    // black box, so Foundry's whisper paper shows through. Same black card. The
+    // words stay."). hunger-warning.mjs's box and its ACE mark, which takes the
+    // speaker strip off, so "Rations" moves inside as the card's title, the way
+    // "A new day" sits.
     await ChatMessage.create({
-      content: `<div style="padding:6px 2px;font-size:14px;line-height:1.55">${rows.join("")}</div>`,
+      content: `<div style="background:#0f1014;border:1px solid #3a3122;border-left:4px solid #d4af37;
+                  border-radius:5px;padding:12px 14px;color:#c9bd94;font-size:14px;line-height:1.55;">
+        <div style="font-size:18px;font-weight:700;color:#d4af37;margin-bottom:2px;">Rations</div>
+        ${rows.join("")}
+      </div>`,
       speaker: { alias: "Rations" },
       whisper: ChatMessage.getWhisperRecipients("GM").map(u => u.id),
+      flags: { [MODULE_ID]: { type: "rationsCard" } },
     });
   }
 

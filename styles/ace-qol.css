@@ -236,6 +236,88 @@
   flex: 1 1 auto;          /* fill the row so total can right-justify on a wide row */
 }
 
+/* The table's attack line (his rule, 2026-10-11): the die, then "Rolled an 18
+ * and hit." in the left three quarters; the row's own HIT, MISS or CRIT stays on
+ * the right. On the GM's screen it steps aside and the math shows instead. */
+.ace-qol-atk-table-line {
+  flex: 1 1 0;
+  max-width: 75%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #e8e6e0;
+  font-size: 15px;
+  line-height: 1.3;
+}
+.ace-qol-table-only[data-ace-gm="true"] { display: none !important; }
+
+/* The table's attack card (his rule, 2026-10-11): the attacker's square portrait
+ * and "Attacks Jeth."; the die and the sentence; the target's square portrait,
+ * name and the word. The portrait is shown whole, as the save card's is. */
+.ace-qol-atk-portrait {
+  width: 36px; height: 36px; flex: 0 0 36px;
+  border-radius: 4px;
+  background: #14120e;
+  border: 1px solid #5b5241;
+  display: inline-block;
+}
+.ace-qol-atk-table-name {
+  flex: 1 1 auto; min-width: 0;
+  color: #e8e6e0; font-size: 15px; font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ace-qol-atk-table .ace-qol-atk-result { margin-left: auto; font-size: 0.85rem; }
+/* The attacker, on both cards (his rule, 2026-10-11: "The attacker's portrait is
+   too small. Make it bigger. 'Attacks Jeth' only a little bigger."). */
+.ace-qol-atk-portrait.ace-qol-atk-attacker { width: 52px; height: 52px; flex: 0 0 52px; }
+.ace-qol-atk-item-name.ace-qol-atk-attacks { font-size: 1.1rem; overflow-wrap: anywhere; min-width: 0; }
+/* "The words 'Rolled a 17 and hit.' move one character width to the right, off
+   the die. The yellow number stays the size it is." */
+.ace-qol-atk-table .ace-qol-atk-table-line { margin-left: 1ch; }
+
+/* ⚠️🔴 THE HEAL CARD WEARS THE DAMAGE CARD'S CONTROLS, IN GREEN (his rule,
+   2026-10-11: "The healing controls broke it. They are the damage controls.
+   Copy that row... Green, on this card. Not the red and the gold from the damage
+   buttons. The shape and the size are what you copy. The color stays green.").
+   Colour only: every size, gap and shape is the damage card's own rule above. */
+.ace-qol-heal-result .ace-qol-dmg-ovr,
+.ace-qol-heal-result .ace-qol-dmg-ovr-x {
+  background: linear-gradient(180deg, rgba(126,201,126,0.16) 0%, rgba(80,150,80,0.10) 100%);
+  color: #7ec97e; border-color: rgba(126,201,126,0.35);
+}
+.ace-qol-heal-result .ace-qol-dmg-ovr:hover,
+.ace-qol-heal-result .ace-qol-dmg-ovr-x:hover {
+  background: linear-gradient(180deg, rgba(126,201,126,0.28) 0%, rgba(80,150,80,0.20) 100%);
+  color: #b6e8b6; border-color: rgba(126,201,126,0.55);
+  box-shadow: 0 0 4px rgba(126,201,126,0.25);
+}
+.ace-qol-heal-result .ace-qol-dmg-ovr-active {
+  background: linear-gradient(180deg, #9ad89a 0%, #7ec97e 100%) !important;
+  color: #0c140c !important;
+  border-color: #b6e8b6 !important;
+  box-shadow: 0 0 8px rgba(126,201,126,0.5), inset 0 1px 0 rgba(255,255,255,0.35) !important;
+}
+.ace-qol-heal-result .ace-qol-btn-apply {
+  background: linear-gradient(180deg, rgba(126,201,126,0.22) 0%, rgba(60,140,60,0.16) 100%);
+  color: #7ec97e; border-color: rgba(126,201,126,0.45);
+}
+.ace-qol-heal-result .ace-qol-btn-apply:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(126,201,126,0.32) 0%, rgba(60,140,60,0.26) 100%);
+  border-color: rgba(126,201,126,0.65);
+  box-shadow: 0 0 10px rgba(126,201,126,0.25), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+.ace-qol-heal-result .ace-qol-btn-undo {
+  background: linear-gradient(180deg, rgba(126,201,126,0.12) 0%, rgba(60,140,60,0.08) 100%);
+  color: #9ec99e; border-color: rgba(126,201,126,0.30);
+}
+.ace-qol-heal-result .ace-qol-btn-undo:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(126,201,126,0.22) 0%, rgba(60,140,60,0.16) 100%);
+  border-color: rgba(126,201,126,0.50);
+  box-shadow: 0 0 10px rgba(126,201,126,0.20), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+.ace-qol-heal-result .ace-qol-dmg-actions:first-of-type {
+  border-image: linear-gradient(90deg, transparent, rgba(126,201,126,0.30), transparent) 1;
+}
+
 /* Equals sign — visual breath between the bonus chips and the total */
 .ace-qol-atk-equals {
   color: #666;
@@ -361,10 +443,12 @@
   gap: 6px;
 }
 
+/* Square, never round (his rule, 2026-10-11: "Every portrait on these cards is
+   square. None of them are round."). */
 .ace-qol-atk-img {
   width: 24px;
   height: 24px;
-  border-radius: 50%;
+  border-radius: 3px;
   border: 1px solid #444;
   object-fit: cover;
   flex-shrink: 0;
@@ -485,6 +569,9 @@
 }
 /* Smaller than the 1.5rem it has elsewhere, because this line carries the hit
    points beside it and a narrow chat sidebar has to hold both. */
+/* The 32px indent cleared the 24px circle these rows used to draw beside the
+   name. On the save card's own row (2026-10-12) nothing sits beside it. */
+.ace-qol-save-row .ace-qol-save-hp-line { padding-left: 4px; }
 .ace-qol-save-hp-line .ace-qol-save-result-dmg {
   font-size: 1.2rem;
   flex: 0 1 auto;
@@ -645,8 +732,11 @@
   display: flex; flex-direction: column; align-items: center; gap: 3px;
   flex: 0 0 auto; max-width: 45%;
 }
+/* ⚠️🔴 SQUARE, NEVER A CIRCLE (his rule, 2026-10-12: ".ace-qol-dmg-tgt-img is
+   still border-radius 50%, so the square class never wins. Both cards use the
+   same square portrait the save card uses."). */
 .ace-qol-dmg-tgt-img {
-  width: 56px; height: 56px; border-radius: 50%;     /* 26px → bigger, his rule */
+  width: 56px; height: 56px; border-radius: 8px;     /* 26px → bigger, his rule */
   border: 1px solid rgba(212,175,55,0.4);
   box-shadow: 0 0 3px rgba(212,175,55,0.15);
   object-fit: cover; cursor: pointer;
@@ -892,10 +982,13 @@
    the fill dark is the one change that cannot clash with whichever damage type it
    is. Off is simply the absence of this rule, which is why it comes back looking
    exactly as it did. */
+/* ⚠️ BLOOD RED (his rule, 2026-10-11: "An applied pill keeps the line through
+   it. The white fill becomes blood red. The letters stay light enough to read.
+   Unapplied stays as it is."). */
 .ace-qol-dmg-type-applied {
   cursor: pointer;
   opacity: 1;
-  background: #12120f !important;
+  background: #8b0a0a !important;
   box-shadow: inset 0 0 0 2px currentColor, 0 1px 3px rgba(0,0,0,0.45);
 }
 .ace-qol-dmg-type-applied,
@@ -908,7 +1001,7 @@
   text-decoration-thickness: 2px;
 }
 .ace-qol-dmg-type-applied:hover {
-  background: #1c1b16 !important;
+  background: #a01212 !important;
 }
 
 /* ─── Grand total multi-type separator ─────────────────────────────── */
@@ -1715,7 +1808,7 @@
 .ace-qol-save-target-header > *, .ace-qol-save-result-target > * { white-space: nowrap; }
 
 .ace-qol-save-target-img {
-  width: 24px; height: 24px; border-radius: 50%; border: 1px solid #444; object-fit: cover;
+  width: 24px; height: 24px; border-radius: 4px; border: 1px solid #444; object-fit: cover;
 }
 
 .ace-qol-save-target-name {
@@ -1804,7 +1897,8 @@
 .ace-qol-save-tgt-row:hover { background: rgba(255,255,255,0.08); }
 .ace-qol-save-tgt-img {
   grid-area: img;
-  width: 32px; height: 32px; border-radius: 50%;
+  /* Square, as every card portrait is (his rule, 2026-10-11 and 2026-10-12). */
+  width: 32px; height: 32px; border-radius: 4px;
   object-fit: cover; border: 1px solid #444; flex-shrink: 0;
   align-self: center;
 }
@@ -2088,7 +2182,7 @@
   flex-wrap: wrap; row-gap: 3px;
 }
 .ace-qol-save-pc-result-line .ace-qol-save-tgt-img {
-  width: 24px; height: 24px; border-radius: 50%; object-fit: cover;
+  width: 24px; height: 24px; border-radius: 4px; object-fit: cover;
   border: 1px solid #444;
 }
 .ace-qol-save-pc-result-line .ace-qol-save-tgt-name {
@@ -2423,7 +2517,7 @@
 }
 
 .ace-qol-merge-tgt-img {
-  width: 24px; height: 24px; border-radius: 50%;
+  width: 24px; height: 24px; border-radius: 4px;
   border: 1px solid #444; object-fit: cover; flex-shrink: 0;
 }
 
@@ -7036,13 +7130,13 @@ i.ace-douse-tool::after {
    `.ace-qol-save-tgt-img` is a 32px circle with `object-fit: cover`, so a tall
    token lost the top of its head and a wide one lost its shoulders, inside a
    thumbnail too small to recognise across a table. This overrides all four:
-   bigger, square-cornered, and CONTAIN, so the whole picture is there and the
-   backdrop takes whatever is left over. */
+   bigger and square-cornered.
+   ⚠️ NO LONGER CONTAIN (his rule, 2026-10-11): the box fills, framed from the
+   top so the head stays in it (img.ace-face, at the end of this file). */
 .ace-qol-save-portrait {
   width: 52px !important;
   height: 52px !important;
   border-radius: 8px !important;
-  object-fit: contain !important;
   background: #14120e;
   border: 1px solid #5b5241;
 }
@@ -7089,6 +7183,10 @@ i.ace-douse-tool::after {
 .ace-qol-save-math-die   { color: #ffffff; font-size: 19px; font-weight: 700; }
 .ace-qol-save-math-mod   { color: #b9a978; font-size: 15px; }
 .ace-qol-save-math-total { font-weight: 700; font-size: 19px; }
+/* ⚠️ A TOTAL WITH NO VERDICT HAD NO COLOUR (2026-10-12). Pass and fail set their
+   own; "neutral" set none, so the number took a dark colour off the card and
+   vanished on the black: "9 + 1 =" and then nothing. */
+.ace-qol-save-neutral { color: #e8e6e0; }
 
 /* ── 4. What landed ──────────────────────────────────────────────────────── */
 .ace-qol-save-landed {
@@ -7213,6 +7311,13 @@ i.ace-douse-tool::after {
 .ace-qol-save-row .ace-qol-save-tgt-name {
   flex: 1 1 8ch;
   min-width: 0;
+  /* ⚠️ THE WHOLE NAME (his rule, 2026-10-12: "The name, the dice and the buttons
+     have to be readable"). The base rule above makes every target name one line
+     with "…", which cut "Vilnius the Imp of the Lower Halls" to "Vilnius the
+     Imp o…" on both save-card rows. Here it wraps instead. */
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
   font-weight: bold;
   color: #fff;
   font-size: 17px;
@@ -7273,11 +7378,21 @@ i.ace-douse-tool::after {
    does, and keeps Foundry's own colour and radius. */
 .chat-message[data-ace-skin="1"] {
   --chat-message-background: #0e0e10;
+  /* ⚠️ AND THE BACKGROUND ITSELF, BLACK (his rule, 2026-10-11: "Setting the CSS
+     variable is not enough... a parchment image painted as a background will
+     ignore the variable anyway. Paint the background itself, black, the way the
+     'A new day' card already does."). */
+  background: #0e0e10 !important;
   border-width: 1px;
   /* ⚠️ `.chat-message` hardcodes `color: var(--color-dark-1)`, which the theme
      switch cannot reach, so the one line that would have stayed near-black on
      black is named here. */
   color: var(--color-text-primary, #e8e6e0);
+}
+/* dnd5e's own card inside it carries its own parchment; it shows the black. */
+.chat-message[data-ace-skin="1"] .chat-card,
+.chat-message[data-ace-skin="1"] .rest-card {
+  background: none !important;
 }
 .chat-message[data-ace-skin="1"] .message-header,
 .chat-message[data-ace-skin="1"] .message-header .message-sender,
@@ -7399,6 +7514,23 @@ i.ace-douse-tool::after {
   justify-content: center;
   gap: 8px;
 }
+
+/* The dice to keep, in the same box (his rule, 2026-10-12): the footer's own
+   buttons, green for the better die and red for the worse. A die and the line
+   under it, and the button grows to fit both (every pill fits its own text). */
+.ace-lucky-dialog button[data-action="pick"] {
+  height: auto !important;
+  min-height: 42px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 8px;
+  white-space: normal;
+}
+.ace-lucky-dialog .ace-lucky-pick-die { font-size: 17px; font-weight: 700; }
+.ace-lucky-dialog .ace-lucky-pick-sub { font-size: 14px; font-weight: 500; opacity: .92; }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    NOTICED — the popup when a creature perceives somebody (2026-10-05)
@@ -7548,9 +7680,33 @@ i.ace-douse-tool::after {
    is public to the whole table; a creature's is the GM's. */
 .ace-qol-bonus { display: none !important; }
 .ace-qol-bonus[data-ace-bonus="show"] { display: inline !important; }
+/* A save's own named sum (2026-10-12): hidden until this screen may read it, the
+   same way, and nothing about its size changes. */
+.ace-qol-save-bonus { display: none !important; }
+.ace-qol-save-bonus[data-ace-bonus="show"] { display: inline !important; }
 
 /* ⚠️ THE HIT-POINT CHIP IS A CHIP, NOT A FLEX BOX. It is the GM half of the save
    row (2026-10-06), and the generic reveal turns a revealed block into a flex
    container, which would drop its own padding and height. It keeps the inline
    box it has always had, and the damage beside it stays on the same line. */
 .ace-qol-save-result-hp.ace-qol-gm-only[data-ace-gm="true"] { display: inline-block; }
+
+/* ⚠️🔴 EVERY PORTRAIT IS FRAMED FROM THE TOP (his rule, 2026-10-11: "Every
+   portrait on every card is framed from the top of the picture down. The head
+   stays in the frame. The box fills with whatever fits under that. Never
+   centered on the middle."). One class, `ace-face`, on every creature picture an
+   ACE card or popup draws, whatever box it sits in; a picture with no anchor is
+   centered by the browser, which is how Firaxis's Lucky card showed his chest.
+   ace-qol/tools/portrait-framing-selftest.mjs fails on one that lacks it. */
+img.ace-face { object-fit: cover !important; object-position: 50% 0 !important; }
+
+/* ── THE JOIN LINE'S NAMES FIND THEIR TOKEN (his table, 2026-10-12: "If two
+   tokens share a name, each may join once, and the line has to tell them
+   apart."). "Flameskull (2 of 4)"; a click selects that one and pans to it. ── */
+.ace-perceived-note .ace-perceived-token {
+  color: #e8d49a;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.ace-perceived-note .ace-perceived-token:hover { color: #fff3c4; }

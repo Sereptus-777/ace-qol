@@ -114,18 +114,23 @@ console.log("\nTOP TO BOTTOM");
   // ⚠️ ALL FOUR PROPERTIES, not just the fit: the base class is a 32px circle with
   // `cover`, so overriding object-fit alone still left a cropped thumbnail
   // (ACE-ONE-ROAD.md § 13.4, his card: "not a 32px circle").
-  check("line 3's portrait is shown whole, not a 32px circle",
-    /ace-qol-save-tgt-img ace-qol-save-portrait/.test(save)
-    && /\.ace-qol-save-portrait \{[\s\S]{0,260}object-fit: contain !important;/.test(css)
+  // ⚠️ REVERSED 2026-10-11 (his rule: "Every portrait on every card is framed from the
+  // top of the picture down... The box fills with whatever fits under that."). The
+  // 09-29 box stays; it fills now, anchored at the top, instead of showing it whole.
+  check("line 3's portrait fills its square from the top, not a 32px circle",
+    /ace-qol-save-tgt-img ace-qol-save-portrait ace-face/.test(save)
+    && /img\.ace-face \{ object-fit: cover !important; object-position: 50% 0 !important; \}/.test(css)
     && /width: 52px !important;/.test(css) && /border-radius: 8px !important;/.test(css),
-    "52px, square corners, contain");
+    "52px, square corners, the head in the frame");
   // A real minus sign, not a hyphen: "9 − 2 = 7" lines up with the figures
   // beside it where a hyphen sits too high and too short.
-  check("the math reads the way he wrote it",
-    /modifier >= 0 \? "\+" : "−"/.test(save) && /ace-qol-save-math-die/.test(save),
-    "9 + 3 = 12");
+  // 2026-10-12 (his rule): every bonus is named, in capitals: "9 + 3 WIS = 12".
+  check("the math reads the way he wrote it, every bonus named",
+    /\$\{p\.n >= 0 \? "\+" : "−"\} \$\{Math\.abs\(p\.n\)\}\$\{p\.w \? ` \$\{p\.w\}` : ""\}/.test(save)
+      && /ace-qol-save-math-die/.test(save),
+    "9 + 3 WIS = 12");
   check("and a bonus of nothing says nothing",
-    /modifier === 0 \? "" :/.test(save), "never \"+ 0\"");
+    /modifier === 0 \? ""\s*:\s*namedSaveSum\(/.test(save), "never \"+ 0\"");
 
   // 4. What landed.
   check("line 4 is one line of what landed",
@@ -185,8 +190,11 @@ console.log("\nNO PILL, NO X, NO SKULL");
     /\.ace-qol-save-dc \{ display: none !important; \}/.test(css)
     && /\.ace-qol-save-dc\[data-ace-dc="show"\]/.test(css)
     && /registerDCVisibility\(\);/.test(read("scripts/ace-qol.mjs")), "one pass, every card");
+  // ⚠️ 2026-10-11 (his rule: "The X stays while the roll is still open... When the
+  // row resolves and the damage is nothing, the X comes off that row."): one
+  // answer, SaveEngine._offersX, for every place that draws it.
   check("the X is offered only where damage is still to be rolled",
-    /canRemove: hasDamage === true,/.test(save), "nothing to drop it from");
+    /canRemove: SaveEngine\._offersX\(r, \{ dealsDamage: hasDamage === true, halfOnSave \}\)/.test(save), "nothing to drop it from");
 }
 
 /* ══ 5. FOUNDRY'S SPEAKER STRIP ═══════════════════════════════════════════ */
@@ -282,7 +290,7 @@ console.log("\nTHE HOLD ASKS THE RECIPE");
   check("an unreadable recipe holds, because that is the recoverable answer",
     /if \(!recipe\) return true;/.test(save), "hold, not land");
   check("the cast card's X is gone where nothing is sequenced too",
-    /const _castRemoveBtn = \(t, title\) => _castDealsDamage/.test(save), "both cards");
+    /const _castRemoveBtn = \(t, title\) => SaveEngine\._offersX\(null, \{ dealsDamage: _castDealsDamage \}\)/.test(save), "both cards");
 }
 
 /* == ONE WRITE PER STATUS, PER SOURCE ================================= */
@@ -624,18 +632,22 @@ console.log("\nHARM FROM THE SOURCE ENDS THE CHARM");
     /case "suggestion":/.test(raw), "that spell's own text");
 }
 
-/* == THE PICKER GETS OUT OF THE WAY ==================================== */
-console.log("\nTHE PICKER GETS OUT OF THE WAY");
+/* == THE PICKER ALWAYS ASKS ============================================ */
+// ⚠️ REVERSED 2026-10-11 (his rule: "The portrait picker always asks...
+// The September 30 skip comes out: one creature already targeted is not an
+// answer... The popup opens, and nothing on it arrives already selected.").
+console.log("\nTHE PICKER ALWAYS ASKS");
 {
   const pk = read("scripts/spell-target-picker.mjs");
 
-  check("one legal target already selected means no picker",
-    /if \(cap === 1 && kind !== "exclude"\)/.test(pk)
-    && /return \[chosen\[0\]\.actor\];/.test(pk), "use that target");
-  check("two targeted with room for one is still a question",
-    /if \(chosen\.length > 1\)/.test(pk), "the picker opens to ask which");
-  check("and nothing filters a creature out for a condition it already has",
-    /a recast\s*\n?\s*\/\/ refreshes it/.test(pk), "already Charmed is still legal");
+  check("one legal target already selected no longer stands the picker down",
+    !/if \(cap === 1 && kind !== "exclude"\)/.test(pk)
+    && !/return \[chosen\[0\]\.actor\];/.test(pk), "it asks");
+  check("and nothing arrives selected", /const preSelected = new Set\(\);/.test(pk)
+    && !/preSelected\.add\(/.test(pk), "every time");
+  check("only the life rule and the range take a creature off the list, never a condition it already has",
+    /candidates = candidates\.filter\(c => c\.lifeOk\);/.test(pk)
+    && /candidates = candidates\.filter\(c => c\.isSelf \|\| c\.inRange\);/.test(pk), "already Charmed is still legal");
 
   check("with one target, the click is the cast",
     /if \(maxTargets === 1\) \{[\s\S]{0,260}confirm\.click\(\); return;/.test(pk),

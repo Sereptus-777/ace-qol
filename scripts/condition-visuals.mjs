@@ -10,7 +10,8 @@
 //     poisoned   → sickly green wash
 //     paralyzed  → pale ice-blue + periodic electric flicker
 //     frightened → violet cast + continuous tremble
-//     charmed    → soft pink + drifting hearts
+//     charmed    → NOT ACE'S (his rule, 2026-10-12): the JB2A hearts from his
+//                  Automated Animations go around the token. See LEFT_TO_JB2A.
 //     blinded    → darkened + smoky veil across the eyes
 //     petrified  → full stone (suppresses all other coats — stone is stone)
 //   CHAINS (rope meshes along paths, Johnny's strip PNG as the texture):
@@ -129,6 +130,23 @@ export const BODY_VISUAL_STATUSES = new Set([
   "deafened",
 ]);
 
+/* ⚠️🔴 CHARMED IS THE JB2A HEARTS, NOT ACE'S (his rule, 2026-10-12: "He wants
+   the JB2A hearts going around the token. He does not want the hearts ACE draws
+   on the body. Play the JB2A clip. Do not draw the other one on top of it or
+   instead of it."). ACE drew a pink coat and drifting hearts, and because it
+   did, it switched off Automated Animations' own "Charmed" clip on every charm
+   (ace-qol.mjs) and refused Charm Person's JB2A clip at the cast
+   (animation/spell-animator.mjs). All three asked the list above.
+
+   It stays in BODY_VISUAL_STATUSES, because that list is also what keeps
+   Foundry's square icon off the token. "Does ACE draw it" is this question. */
+export const LEFT_TO_JB2A = new Set(["charmed"]);
+
+/** Does ACE draw this condition on the body itself? */
+export function aceDrawsOnBody(status) {
+  return BODY_VISUAL_STATUSES.has(status) && !LEFT_TO_JB2A.has(status);
+}
+
 // Coat colors / alphas — tuned for readability over varied art without
 // drowning it. Petrified is deliberately heavy: stone should look like stone.
 const COATS = {
@@ -137,7 +155,6 @@ const COATS = {
   poisoned:   { tint: 0x2fe04a, alpha: 0.42 },
   paralyzed:  { tint: 0xbfe8ff, alpha: 0.30 },
   frightened: { tint: 0x9a6bd0, alpha: 0.20 },
-  charmed:    { tint: 0xff8fc0, alpha: 0.22 },
   blinded:    { tint: 0x111111, alpha: 0.20 },
   petrified:  { tint: 0x848484, alpha: 0.90 },   // legacy flat wash (fallback only now)
 };
@@ -317,7 +334,7 @@ export class ConditionVisuals {
 
       // Death pipeline owns dead tokens — we render nothing on them.
       const active = statuses.has("dead") ? []
-        : [...statuses].filter(s => BODY_VISUAL_STATUSES.has(s)).sort();
+        : [...statuses].filter(s => aceDrawsOnBody(s)).sort();
       const key = active.join("|");
 
       const existing = ConditionVisuals._live.get(id);
@@ -958,7 +975,7 @@ export class ConditionVisuals {
 
     // ── COATS (petrified suppresses the others — stone is stone) ──
     const coatOrder = has("petrified") ? ["petrified"]
-      : ["poisoned", "paralyzed", "frightened", "charmed", "blinded"].filter(has);
+      : ["poisoned", "paralyzed", "frightened", "blinded"].filter(has);
     for (const c of coatOrder) {
       // ── Petrified → TRUE STONE, WELDED TO THE TOKEN (Johnny 2026-07-26) ──
       // The old path floated a desaturated COPY of him on the global stage layer;
@@ -1047,20 +1064,6 @@ export class ConditionVisuals {
         const t = (now + phase) % 2600;
         bolt.alpha = t < 200 ? (1 - t / 200) : 0;
       });
-    }
-
-    // ── Charmed — drifting hearts ──
-    if (has("charmed")) {
-      for (let i = 0; i < 3; i++) {
-        const heart = ConditionVisuals._heart(Math.max(5, bw * 0.07), 0xff7fb2);
-        cont.addChild(heart);
-        const phase = i * 1400, period = 4200, drift = (i - 1) * bw * 0.16;
-        anims.push((now) => {
-          const t = ((now + phase) % period) / period;
-          heart.position.set(drift + Math.sin(t * Math.PI * 4) * bw * 0.05, -bh * (0.18 + t * 0.55));
-          heart.alpha = t < 0.15 ? t / 0.15 : t > 0.75 ? (1 - t) / 0.25 : 1;
-        });
-      }
     }
 
     // ── ORBIT FAMILY — glyphs circling above the head ──

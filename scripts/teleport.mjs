@@ -539,7 +539,7 @@ export class Teleport {
       ? nearby.map(t => `
           <label style="display:flex;align-items:center;gap:10px;padding:5px 2px;cursor:pointer;">
             <input type="checkbox" name="who" value="${esc(t.id)}" />
-            <img src="${esc(t.document?.texture?.src ?? t.actor?.img ?? "icons/svg/mystery-man.svg")}" style="width:36px;height:36px;border-radius:50%;border:1px solid #6a5a9a;object-fit:cover;" />
+            <img class="ace-face" src="${esc(t.document?.texture?.src ?? t.actor?.img ?? "icons/svg/mystery-man.svg")}" style="width:36px;height:36px;border-radius:50%;border:1px solid #6a5a9a;" />
             <span>${esc(t.name)}</span>
           </label>`).join("")
       : `<div style="color:#b9b0cf;font-size:14px;">Nobody within 10 feet that ${esc(caster.name)} can see.</div>`;
