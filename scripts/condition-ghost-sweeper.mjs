@@ -48,6 +48,11 @@ export class ConditionGhostSweeper {
   static isGhost(effect) {
     try {
       if (!effect?.disabled) return false;
+      // ⚠️ NOT EXHAUSTION (2026-10-12). Every other condition switched off does
+      // nothing; a switched-off exhaustion still carries its level, and dnd5e
+      // applies that level anyway (Jeth: panel 5, walk 0, switch off). Deleting it
+      // would drop a level the sheet still holds. exhaustion.mjs switches it back on.
+      if (effect.statuses?.has?.("exhaustion") || /^dnd5eexhaustion0*$/i.test(String(effect.id ?? ""))) return false;
       const hasStatus = (effect.statuses?.size ?? 0) > 0;
       const fixedId = FIXED_CONDITION_ID.test(String(effect.id ?? ""));
       return hasStatus || fixedId;

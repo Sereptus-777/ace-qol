@@ -110,9 +110,11 @@ console.log("\n3. THE TABLE'S ATTACK LINE IS A SENTENCE ABOUT THE DIE");
   check("the table's card is its own block, and the GM's card is the GM half",
     /<div class="ace-qol-atk-table ace-qol-table-only">/.test(tableCard)
       && /\$\{tableCard\}\s*<div class="ace-qol-gm-only ace-qol-block">/.test(atk));
-  check("its header is the attacker's portrait and 'Attacks <the target>.', nothing else",
+  // His rule, 2026-10-13: "One line across the header: the attacker's name, then
+  // 'attacks', then the target... 'Jeth attacks Shield Guardian'."
+  check("its header is the attacker's portrait and '<attacker> attacks <the target>', nothing else",
     /const _attackerFace = faceOf\(actor\);/.test(atk) && /\$\{_attackerPortrait\}\s*\$\{_attacksLine\}/.test(tableCard)
-      && /Attacks \$\{_whom\}\./.test(atk)
+      && atk.includes('${_attackerName ? `${_attackerName} attacks` : "Attacks"} ${_whom}</strong>')
       && !/item\.name|atk-info-toggle|rollModeLabel/.test(tableCard));
   check("under it the die, with no number beside it, then the sentence; no portrait on that row",
     /<i class="fas fa-dice-d20 ace-qol-atk-d20-fallback" style="display:none"><\/i>\s*<\/span>\s*\$\{attackSentenceHtml\(d20, results\)\}/.test(tableCard));
@@ -287,8 +289,10 @@ console.log("\n8. THE LONG REST AND THE RATIONS CARD ON THE BLACK CARD");
     "a parchment image ignores the variable");
   check("and dnd5e's own card inside shows the black",
     /\[data-ace-skin="1"\] \.chat-card,\s*\.chat-message\[data-ace-skin="1"\] \.rest-card \{\s*background: none !important;/s.test(css));
-  check("the rations whisper is the 'A new day' card: the same black box",
-    /_mealCard[\s\S]*?background:#0f1014;border:1px solid #3a3122;border-left:4px solid #d4af37;/.test(clock));
+  // The frame became the one gold line every ACE card has (his rule, 2026-10-13:
+  // the attack card's gold line on every card, no new gold).
+  check("the rations whisper is the 'A new day' card: the same black box, the one gold frame",
+    /_mealCard[\s\S]*?background:#0f1014;border:1px solid #d4af37;/.test(clock));
   check("and it is marked as ACE's, the way 'A new day' is, so the whisper paper is gone",
     /flags: \{ \[MODULE_ID\]: \{ type: "rationsCard" \} \}/.test(clock));
 }

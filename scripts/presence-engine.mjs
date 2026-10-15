@@ -25,7 +25,7 @@
 
 import { aceDistanceFt } from "./geometry-utils.mjs";
 import { Situation } from "./situation.mjs";
-import { readFrightfulPresence } from "./rules/creature-words.mjs";
+import { readFrightfulPresence, kindOf } from "./rules/creature-words.mjs";
 import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
 import { saveDCOf } from "./rules/save-dc.mjs";
 // Where a pop-up opens, so three boxes never land on the same spot.
@@ -528,14 +528,29 @@ export class PresenceEngine {
     });
   }
 
-  /** The 24-hour immunity, if it is on this creature and still standing. */
+  /**
+   * The immunity a made save bought, if it is on this creature and still standing.
+   *
+   * Whose it is, by what the words said (the turn-start engine's stench, 2026-10-14):
+   *   • left unsaid (every presence): the source's actor, as it always was;
+   *   • `perCreature` ("immune to the ghast's Stench", 2014): that one creature,
+   *     its token when unlinked, since a room of ghasts can share one actor;
+   *   • `allOfKind` ("immune to the Stench of all ghasts", 2024): every creature
+   *     of that kind, by the source's own name.
+   */
   static immunityOn(target, sourceDoc, item) {
     const name = String(item?.name ?? "").toLowerCase();
     const now = Number(game.time?.worldTime ?? 0);
     for (const e of target?.effects?.contents ?? []) {
       const im = e.flags?.[MODULE_ID]?.presenceImmunity;
       if (!im) continue;
-      if (im.sourceActorId !== (sourceDoc.actor?.id ?? null)) continue;
+      if (im.allOfKind) {
+        if (kindOf(sourceDoc) !== kindOf(im.allOfKind)) continue;
+      } else if (im.perCreature) {
+        const same = im.sourceTokenId === sourceDoc.id
+          || (sourceDoc.actorLink && im.sourceActorId && im.sourceActorId === (sourceDoc.actor?.id ?? null));
+        if (!same) continue;
+      } else if (im.sourceActorId !== (sourceDoc.actor?.id ?? null)) continue;
       if (String(im.itemName ?? "").toLowerCase() !== name) continue;
       // ⚠️ AN EXPIRED MARK IS NOT AN ANSWER. Foundry expires an effect's
       // duration on its own clock; this one is measured in a day of world time,
@@ -561,25 +576,28 @@ export class PresenceEngine {
       if (sourceDoc && PresenceEngine.immunityOn(target, sourceDoc, { name: mark.itemName })) return null;
       const seconds = Number(mark.immuneHours) * 3600;
       const now = Number(game.time?.worldTime ?? 0);
+      const whose = mark.allOfKind ? `every ${kindOf(mark.allOfKind)}'s` : `${mark.sourceName}'s`;
+      const hours = `${mark.immuneHours} hour${Number(mark.immuneHours) === 1 ? "" : "s"}`;
       const [made] = await target.createEmbeddedDocuments("ActiveEffect", [{
-        name: `Immune: ${mark.sourceName}'s ${mark.itemName}`,
+        name: `Immune: ${whose} ${mark.itemName}`,
         img: "icons/svg/shield.svg",
         origin: mark.itemUuid ?? null,
         disabled: false,
         transfer: false,
         duration: { seconds, startTime: now },
-        description: `${mark.sourceName}'s ${mark.itemName} cannot frighten this creature again `
-          + `for ${mark.immuneHours} hours (${why}).`,
+        description: `${whose} ${mark.itemName} cannot ${mark.verb ?? "frighten"} this creature again `
+          + `for ${hours} (${why}).`,
         flags: { [MODULE_ID]: { presenceImmunity: {
           sourceActorId: mark.sourceActorId ?? null,
           sourceTokenId: mark.sourceTokenId ?? null,
           itemName: mark.itemName,
           until: now + seconds,
           why,
+          ...(mark.allOfKind ? { allOfKind: kindOf(mark.allOfKind) } : {}),
+          ...(mark.perCreature ? { perCreature: true } : {}),
         } } },
       }]);
-      say(`${target.name} is immune to ${mark.sourceName}'s ${mark.itemName} for `
-        + `${mark.immuneHours} hours (${why}).`);
+      say(`${target.name} is immune to ${whose} ${mark.itemName} for ${hours} (${why}).`);
       return made ?? null;
     } catch (err) {
       console.warn(`${LOG} | could not make ${target?.name} immune:`, err);

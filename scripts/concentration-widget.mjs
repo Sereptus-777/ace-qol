@@ -2437,7 +2437,7 @@ export class ConcentrationWidget {
           ${this._escapeHtml(spellName)} — ${phaseLabel}
         </div>
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-          <img class="ace-face" src="${portrait}" style="width:24px;height:24px;border-radius:50%;flex-shrink:0;border:1px solid #444;">
+          <img class="ace-face" src="${portrait}" style="width:24px;height:24px;border-radius:4px;flex-shrink:0;border:1px solid #444;">
           <span style="flex:1;font-weight:bold;color:#fff;font-size:14px;line-height:1.2;">${targetName}</span>
         </div>
         <div style="padding-left:32px;color:#4ade80;font-weight:bold;font-size:13px;letter-spacing:0.4px;">

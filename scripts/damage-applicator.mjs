@@ -3,6 +3,7 @@
 // add target / cleave. Owns the override cache and actor resolution.
 // ──────────────────────────────────────────────────────────────────────────────
 
+import { deleteKey } from "./foundry-compat.mjs";
 import { MODULE_ID } from "./ace-qol.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
@@ -905,12 +906,14 @@ export class DamageApplicator {
        this never used.
 
        The record is deleted now, and everything the card shows is repainted from
-       it. There is one record and nothing keeps a copy. */
+       it. There is one record and nothing keeps a copy. The delete is spelled by
+       the one helper (foundry-compat.mjs): `-=key` on 13, the `_del` operator on
+       14, where `-=` is deprecated. */
     await message.update({
-      [`flags.${MODULE_ID}.-=appliedComps`]: null,
-      [`flags.${MODULE_ID}.-=perCompApplied`]: null,
-      [`flags.${MODULE_ID}.-=perTypeApplied`]: null,
-      [`flags.${MODULE_ID}.-=hpDelta`]: null,
+      ...deleteKey(`flags.${MODULE_ID}.appliedComps`),
+      ...deleteKey(`flags.${MODULE_ID}.perCompApplied`),
+      ...deleteKey(`flags.${MODULE_ID}.perTypeApplied`),
+      ...deleteKey(`flags.${MODULE_ID}.hpDelta`),
       [`flags.${MODULE_ID}.applied`]: false,
     });
 

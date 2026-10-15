@@ -31,6 +31,21 @@ export function revivesTheDead(item) {
 }
 
 /**
+ * Is this token a thing a spell put on the map rather than a creature? A
+ * Spiritual Weapon is "a floating, spectral weapon", and it has a token so it
+ * can be seen and moved: nothing may target it, no area or aura or save catches
+ * it, and it never rolls initiative (his call, 2026-10-14). The mark is on the
+ * token (`flags.ace-qol.notACreature`, what it is), with the actor's as a fallback.
+ *
+ * @returns {string|null}  what it is ("Spiritual Weapon"), or null for a creature
+ */
+export function notACreature(actor, tokenDoc = null) {
+  const doc = tokenDoc ?? actor?.token ?? null;
+  const mark = doc?.flags?.["ace-qol"]?.notACreature ?? actor?.flags?.["ace-qol"]?.notACreature ?? null;
+  return mark ? String(mark) : null;
+}
+
+/**
  * How alive a creature is, as the table sees it:
  *   alive  above 0 hit points
  *   dying  at 0 hit points and not dead: unconscious, making death saves
@@ -48,6 +63,9 @@ export function revivesTheDead(item) {
 export function lifeStateOf(actor, tokenDoc = null) {
   const hp = Number(actor?.system?.attributes?.hp?.value ?? 0);
   const flags = tokenDoc?.flags?.["ace-qol"] ?? {};
+  // A spell's own token (a Spiritual Weapon) is on the map and is not a creature.
+  const thing = notACreature(actor, tokenDoc);
+  if (thing) return { hp, state: "thing", thing, killedForGood: false, unmarkedAtZero: false };
   const killedForGood = !!flags.permanentlyDead;
   const marked = !!actor?.statuses?.has?.("dead") || !!flags.isDead || killedForGood
     || Number(actor?.system?.attributes?.death?.failure ?? 0) >= 3;
@@ -85,6 +103,7 @@ export function lifeStateOf(actor, tokenDoc = null) {
  */
 export function pickable(kind, life) {
   const st = life?.state ?? "alive";
+  if (st === "thing") return { ok: false, why: `not a creature (${life?.thing ?? "a spell's own token"})` };
   if (kind === "revive") {
     if (st === "dead" || life?.unmarkedAtZero) return { ok: true, why: "" };
     return { ok: false, why: st === "dying"

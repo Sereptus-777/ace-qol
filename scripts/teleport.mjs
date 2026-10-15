@@ -34,6 +34,7 @@ import { RulesBrain } from "./rules/rules-brain.mjs";
 import { aceDistanceFt, aceTakenSquares, aceFootprintInScene }
   from "./geometry-utils.mjs";
 import { isDead } from "./is-down.mjs";
+import { notACreature } from "./road/picker-rule.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { teleportLookFor } from "./animation/autorec.mjs";
@@ -517,6 +518,7 @@ export class Teleport {
     const eye = casterToken.center ?? Teleport._centre(casterToken.document.x, casterToken.document.y, casterToken.document);
     return (canvas.tokens?.placeables ?? []).filter(t => {
       if (!t?.actor || t.id === casterToken.id) return false;
+      if (notACreature(t.actor, t.document)) return false;   // a Spiritual Weapon does not come along
       if (t.document?.hidden && !game.user?.isGM) return false;
       if (isDead(t)) return false;
       if (aceDistanceFt(casterToken, t) > 10) return false;

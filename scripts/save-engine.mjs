@@ -18,6 +18,7 @@
 // GM ALWAYS clicks the button. No auto-rolling.
 // ──────────────────────────────────────────────────────────────────────────────
 
+import { messageModeName } from "./foundry-compat.mjs";
 import { MODULE_ID } from "./ace-qol.mjs";
 // The one reader for what made a number (roll-formula.mjs): every ACE roll card
 // prints the parts behind its total, never the total alone.
@@ -72,7 +73,7 @@ import { whatLands, shareOf } from "./road/what-lands.mjs";
 import { HpDoor, ConditionDoor, CardDoor, SignalDoor } from "./road/doors.mjs";
 import { recipeForActivity, repeatTriggerOf, loadBookFor, isFollowUp, rulesActionSave } from "./inference/recipe.mjs";
 // Who may be on a card at all: the one life rule every picker asks (Phase 4-5).
-import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
+import { lifeStateOf, pickable, notACreature } from "./road/picker-rule.mjs";
 // Edge to edge, under his one space rule (a picture off its square is still in it).
 import { aceDistanceFt } from "./geometry-utils.mjs";
 // Whose spirits they are: the caster's alignment picks necrotic or radiant.
@@ -833,8 +834,9 @@ export class SaveEngine {
     }
 
 
+    // A spell's own token (a Spiritual Weapon) is not a creature: no area catches it.
     return canvas.tokens.placeables.filter(
-      token => isTokenInTemplate(token, templateObject));
+      token => !notACreature(token.actor, token.document) && isTokenInTemplate(token, templateObject));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -3512,8 +3514,10 @@ export class SaveEngine {
     // ⚠️ THE DC IS ON THE HEADER, AND IT IS THE ROLLERS' TO READ (his card,
     // 2026-09-29: "Header: 'Jeth uses Spiked Chain on Escher · DC 14 Dexterity'" and
     // "Do not hide Lamia's DC 13 on Jeth's Charm card. He is rolling against it.").
+    // ⚠️ THE HEADER PORTRAIT SITS IN THE STONE (his rule, 2026-10-13: "recessed,
+    // not a picture lying on top of it"). The well around it is the recess.
     return `<div class="ace-qol-save-cast-line">`
-      + `${img ? `<img class="ace-qol-save-caster-img ace-qol-save-portrait ace-face" src="${img}"${fallbackAttr} alt="" />` : ""}`
+      + `${img ? `<span class="ace-qol-head-well"><img class="ace-qol-save-caster-img ace-qol-save-portrait ace-face" src="${img}"${fallbackAttr} alt="" /></span>` : ""}`
       + `<span class="ace-qol-save-cast-text">`
       + `<strong>${esc(who)}</strong> ${verb ? esc(verb) : (isSpell ? "casts" : "uses")} <strong>${esc(title)}</strong>`
       + `${targetNames ? ` on <strong>${targetNames}</strong>` : ""}`
@@ -4354,9 +4358,7 @@ export class SaveEngine {
         rollBtn.addEventListener("click", async () => {
           rollBtn.disabled = true;
           rollBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling...';
-          const restoreScroll = this._preserveChatScroll();
           await this._rollAllSaves(message);
-          restoreScroll();
           rollBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED \u2713';
           await message.setFlag(MODULE_ID, "rolled", true);
         });
@@ -4520,9 +4522,7 @@ export class SaveEngine {
             return;
           }
 
-          const restoreScroll = this._preserveChatScroll();
           await this._rollPcSave(fakeMsg);
-          restoreScroll();
           btn.innerHTML = '<i class="fas fa-check"></i>';
         });
       }
@@ -4564,9 +4564,7 @@ export class SaveEngine {
           rollNpcBtn.disabled = true;
           rollNpcBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling NPC saves...';
 
-          const restoreScroll = this._preserveChatScroll();
           await this._rollNpcSavesFromTargetList(message);
-          restoreScroll();
 
           rollNpcBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED \u2713';
           await message.setFlag(MODULE_ID, "rolled", true);
@@ -4614,35 +4612,11 @@ export class SaveEngine {
   //  Button Wiring — PC Save Prompt (whispered to player)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /**
-   * Keep the GM's chat scroll position when THEY roll a save (Johnny 2026-07-11:
-   * "don't jump down to the result — I have to scroll back up to find the next
-   * PC I missed"). Foundry force-scrolls to the bottom whenever the message
-   * AUTHOR is the current user, so a GM-rolled save always yanks the GM's view
-   * down (a connected player, not the author, stays put). We snapshot the log's
-   * scroll position and, if the GM had scrolled UP off the bottom, re-assert it
-   * across a few frames to beat Foundry's auto-scroll. Returns a restore() fn.
-   */
-  _preserveChatScroll() {
-    try {
-      const log = document.querySelector("#chat-log")
-        ?? document.querySelector("ol.chat-log")
-        ?? ui.chat?.element?.querySelector?.("ol.chat-log");
-      if (!log) return () => {};
-      const prevTop  = log.scrollTop;
-      const atBottom = (log.scrollHeight - log.scrollTop - log.clientHeight) < 40;
-      return () => {
-        if (atBottom) return;   // they were pinned to the bottom — leave it there
-        const restore = () => { try { log.scrollTop = prevTop; } catch (_) {} };
-        restore();
-        // Result card + DSN reveal render async — re-assert to outlast the
-        // auto-scroll without guessing a single delay.
-        setTimeout(restore, 120);
-        setTimeout(restore, 400);
-        setTimeout(restore, 1000);
-      };
-    } catch (_) { return () => {}; }
-  }
+  // ⚠️ THE GM'S PLACE IN THE CHAT IS NO LONGER KEPT WHEN HE ROLLS A SAVE. The
+  // July rule ("don't jump down to the result") held his scroll by writing it back
+  // across a second; his rule of 2026-10-12 is "Every card, every time... Do not
+  // set scrollTop" (chat-render-utils.mjs, registerChatScroll), and the two
+  // cannot both stand.
 
   /**
    * Save prompts this screen gave back to the chat: the box was closed without
@@ -4814,13 +4788,8 @@ export class SaveEngine {
         match: { kind: "save", castId: f.castId ?? null, tokenDocId: f.tokenDocId ?? null },
         lucky,
         onRoll: async () => {
-          const restoreScroll = this._preserveChatScroll();
-          try {
-            const res = await this._rollPcSave(message);
-            if (!res) throw new Error(`${actor.name}'s save did not roll`);
-          } finally {
-            restoreScroll();
-          }
+          const res = await this._rollPcSave(message);
+          if (!res) throw new Error(`${actor.name}'s save did not roll`);
         },
         onDismiss: async () => this._giveSavePromptToChat(message),
       });
@@ -4915,9 +4884,7 @@ export class SaveEngine {
         const says = pill ?? rollBtn;
         says.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span>Rolling…</span>';
 
-        const restoreScroll = this._preserveChatScroll();
         await this._rollPcSave(message);
-        restoreScroll();
 
         // Collapse on this client immediately (DOM only — no flag write needed)
         says.innerHTML = '<i class="fas fa-check"></i> <span>Rolled</span>';
@@ -6393,7 +6360,12 @@ export class SaveEngine {
       // The caller passes options.isMultiTarget=true when rolling a batch
       // (Mass Suggestion, Fireball, etc.) so multi-target casts don't
       // burn the full single-target delay per die.
-      try {
+      // ⚠️ SILENCE IS A FLAG ON THIS ROAD, NOT A SECOND ROLLER (his rule,
+      // 2026-10-13: "no Dice So Nice, no popup, no per-creature card. It is not a
+      // second roller, and it is not a raw dnd5e roll placed so the hooks never
+      // see it."). The same roll, the same gate, the same bonuses and the same
+      // reactions afterwards; only the dice on screen and the questions go.
+      if (!options.silent) try {
         // Fire-and-forget: animation runs in background, we control wait
         // time via the setting (decoupled from DSN's own throw speed).
         safeShowForRoll(roll, "NPC save roll");
@@ -6416,8 +6388,9 @@ export class SaveEngine {
       rollResult = roll;
 
       // ── LUCKY (2014): a save about to fail, after its dice, before anything
-      // is decided from it (luck.mjs). Only a creature with the feat is asked.
-      if (luckyFeatItem(targetActor)) {
+      // is decided from it (luck.mjs). Only a creature with the feat is asked,
+      // and nobody is asked anything on a silent save.
+      if (!options.silent && luckyFeatItem(targetActor)) {
         try {
           const got = await luckOwnRoll({ actor: targetActor, kind: "save",
             // No DC in the words a player reads (his rule, 2026-10-11).
@@ -6569,7 +6542,7 @@ export class SaveEngine {
             const damageRolls = await activity.rollDamage(
               rollConfig,
               { configure: false },          // skip the modify-roll dialog
-              { create: false, rollMode: CONST.DICE_ROLL_MODES?.PUBLIC ?? "publicroll" }
+              { create: false, rollMode: messageModeName("public") }
             );
             if (Array.isArray(damageRolls) && damageRolls.length > 0) {
               for (const roll of damageRolls) {

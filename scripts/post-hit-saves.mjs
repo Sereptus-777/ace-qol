@@ -1121,9 +1121,30 @@ export class PostHitSaves {
             // survived an escape that had already ended the grapple.
             // (2026-09-29, his table. The pins passed because they handed the
             // lander both conditions at once, which the table never did.)
-            const tableConditions = (matchedEntry.effects ?? [])
+            let tableConditions = (matchedEntry.effects ?? [])
               .filter(fx => fx.type === "condition" && fx.condition)
               .map(fx => ({ key: fx.condition }));
+            /* ⚠️🔴 A ROW WITH A SIZE LIMIT LANDS ONLY ON A CREATURE THAT SIZE OR
+               SMALLER (his table, 2026-10-12: "3–4: grapple and restrained, and only
+               if the target is Medium or smaller. A Large shield guardian does not
+               get this one."). */
+            if (matchedEntry.maxSize && tableConditions.length) {
+              const RANK = { tiny: 0, sm: 1, small: 1, med: 2, medium: 2, lg: 3, large: 3,
+                             huge: 4, grg: 5, gargantuan: 5 };
+              const size = String(targetActor?.system?.traits?.size ?? "").toLowerCase();
+              const limit = RANK[String(matchedEntry.maxSize).toLowerCase()];
+              if (Number.isFinite(RANK[size]) && Number.isFinite(limit) && RANK[size] > limit) {
+                for (const c of tableConditions) {
+                  result.effects.push({ type: "condition", condition: c.key, blocked: true,
+                    reason: `${tgt.name} is ${size === "lg" ? "Large" : size === "huge" ? "Huge" : size === "grg" ? "Gargantuan" : size}, `
+                      + `and "${matchedEntry.name}" needs ${matchedEntry.maxSize} or smaller` });
+                }
+                console.log(`${MODULE_ID} | POST-HIT TABLE: "${matchedEntry.name}" needs a target that is `
+                  + `${matchedEntry.maxSize} or smaller, and ${tgt.name} is bigger, so `
+                  + `${tableConditions.map(c => c.key).join(" and ")} did not go on.`);
+                tableConditions = [];
+              }
+            }
             for (const fx of (matchedEntry.effects ?? [])) {
               console.log(`${MODULE_ID} | POST-HIT TABLE: effect:`, fx);
             }
@@ -1197,6 +1218,15 @@ export class PostHitSaves {
       console.log(`${MODULE_ID} | on-hit: "${item?.name}" has no recipe, so no condition of its own lands on a hit.`);
       return;
     }
+    // The conditions its save's table names: the failed save's, one row of them.
+    let tableConditions = new Set();
+    try {
+      tableConditions = new Set((DescriptionParser.parse(item)?.effectTable?.entries ?? [])
+        .flatMap(e => (e.effects ?? []).filter(fx => fx.type === "condition" && fx.condition))
+        .map(fx => String(fx.condition).toLowerCase()));
+    } catch (err) {
+      console.warn(`${MODULE_ID} | on-hit: could not read "${item?.name}"'s save table:`, err);
+    }
 
     for (const h of struck) {
       const scene = game.scenes.get(h.sceneId) ?? canvas.scene;
@@ -1210,6 +1240,22 @@ export class PostHitSaves {
       }
 
       const v = whatLands(recipe, { result: h.hitResult });
+      /* ⚠️🔴 NOTHING ON THE SAVE'S TABLE LANDS ON THE HIT (his table, 2026-10-12: Jeth's Spiked Chain hit for 13 piercing, ROLL SAVES was
+         never pressed, and Grappled, Restrained and Prone all went on. His words: "A
+         failure is one effect, chosen or a d6, not all three... Nothing from that list
+         goes on before the save is rolled and failed.")
+         The parser marks a table's conditions as the save's; this is the second
+         lock, for a table condition that reaches the recipe another way (an effect
+         the activity names). They land on a failed save, one row, on the save card. */
+      if (tableConditions.size) {
+        const held = v.conditions.filter(c => tableConditions.has(String(c?.key ?? "").toLowerCase()));
+        if (held.length) {
+          v.conditions = v.conditions.filter(c => !tableConditions.has(String(c?.key ?? "").toLowerCase()));
+          console.log(`${MODULE_ID} | on-hit: "${item?.name}" hit ${name}; ${held.map(c => c.key).join(", ")} `
+            + `${held.length === 1 ? "is" : "are"} on its save's table, so nothing from that list goes on until `
+            + `the save is rolled and failed.`);
+        }
+      }
       if (!v.conditions.length) {
         console.log(`${MODULE_ID} | on-hit: "${item?.name}" hit ${name} and its words name no condition `
           + `to put on (${v.why}).`);

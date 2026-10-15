@@ -108,6 +108,10 @@ export function readWeather(scene, terrainKinds = []) {
         if (found) { w = { ...spec }; sources.push(`the scene is called "${scene?.name}"`); break; }
       }
     }
+
+    // ⚠️ No scene is cold by its name any more (his rule, 2026-10-13: "Temperature
+    // lives on the scene"). The hourly cold and heat read the scene's own
+    // Temperature (°C) in exposure.mjs; this reader only describes the weather.
   } catch (err) {
     console.warn("ace-qol | could not read the weather; treating it as unknown:", err);
   }

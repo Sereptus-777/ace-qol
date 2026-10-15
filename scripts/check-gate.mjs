@@ -36,6 +36,7 @@
 
 // Hardcoded rather than imported: an imported const at the top level of a module
 // caught in an import cycle throws at load and takes the whole module with it.
+import { applyMessageMode } from "./foundry-compat.mjs";
 import { faceOf } from "./face.mjs";
 
 const MODULE_ID = "ace-qol";
@@ -416,9 +417,12 @@ export class CheckGate {
       // written BY a GM, because Foundry draws a whisper for its author as well
       // as its recipients (2026-09-18).
       const gmIds = gmOnly ? (game.users?.filter?.(u => u.isGM).map(u => u.id) ?? []) : [];
-      await CardDoor.post({
+      // ⚠️ WHO SEES IT IS APPLIED, NOT HINTED. A `rollMode` key in the message
+      // data is not a ChatMessage field, so Foundry dropped it; the GM-only card
+      // stayed GM-only only because it also named the GMs. The one writer
+      // (foundry-compat.mjs) applies the mode in 13's or 14's words.
+      await CardDoor.post(applyMessageMode({
         speaker: ChatMessage.getSpeaker({ actor }),
-        rollMode: gmOnly ? CONST.DICE_ROLL_MODES.PRIVATE : CONST.DICE_ROLL_MODES.PUBLIC,
         ...(gmOnly ? { whisper: gmIds } : {}),
         // ⚠️ NO `rolls` ARRAY. The dice were thrown above; handing them to the
         // message as well makes Dice So Nice animate the same roll a second
@@ -440,7 +444,7 @@ export class CheckGate {
           + extra
           + `</div>`,
         flags: { [MODULE_ID]: { [flag]: true } },
-      });
+      }, gmOnly ? "gm" : "public"));
     } catch (err) {
       console.error(`${LOG} | could not post the card for ${label || title}:`, err);
       ui.notifications?.warn(`${actor?.name ?? "That creature"} rolled `
@@ -1010,7 +1014,82 @@ export class CheckGate {
         }
       }
     } catch (_) { /* reasons are a courtesy; the mode still stands */ }
+
+    /* ⚠️🔴 AND WHAT dnd5e SETS ITSELF (his table, 2026-10-12: Jeth at exhaustion 1
+       rolled an ability check at disadvantage; the popup said "Nothing on this
+       creature changes this check" and the card "DISADVANTAGE — NO REASON WAS
+       RECORDED". "The reason is exhaustion 1. The popup names it, and the roll
+       stores that same reason so the card names it. One source for both.").
+
+       dnd5e puts these modes on in its own data preparation, from its table
+       CONFIG.DND5E.conditionEffects: a 2014 exhaustion level, poisoned,
+       restrained, invisible, surprised. No active effect carries a change for
+       them, so the loop above had nothing to find. The same table, read the way
+       dnd5e reads it, names them; the mode is still the sheet's, untouched. This
+       one list is what the popup shows and what the card's row carries. */
+    try {
+      for (const reason of CheckGate._conditionReasons(actor, wanted)) {
+        if (!out.reasons.some(r => String(r.reason).toLowerCase() === reason.toLowerCase())) {
+          out.reasons.push({ reason });
+        }
+      }
+    } catch (err) {
+      console.warn(`${LOG} | could not name what dnd5e's conditions do to ${actor?.name}'s roll:`, err);
+    }
     return out;
+  }
+
+  /**
+   * "Exhaustion 1: disadvantage", "Poisoned: disadvantage": the conditions dnd5e
+   * applies to the roll modes this roll reads, decided exactly as dnd5e's own
+   * Actor#hasConditionEffect decides them (proven from dnd5e 5.3.3).
+   *
+   * @param {Actor} actor
+   * @param {Set<string>} paths  the roll-mode fields this roll reads
+   * @returns {string[]}
+   */
+  static _conditionReasons(actor, paths) {
+    const table = CONFIG.DND5E?.conditionEffects ?? {};
+    const keys = [];
+    for (const path of paths ?? []) {
+      let m = String(path).match(/^system\.abilities\.(\w+)\.check\.roll\.mode$/);
+      if (m) { keys.push(["abilityCheckDisadvantage", "disadvantage"]); continue; }
+      m = String(path).match(/^system\.abilities\.(\w+)\.save\.roll\.mode$/);
+      if (m) {
+        keys.push(["abilitySaveDisadvantage", "disadvantage"]);
+        if (m[1] === "dex") keys.push(["dexteritySaveDisadvantage", "disadvantage"]);
+        continue;
+      }
+      if (path === "system.attributes.init.roll.mode") {
+        keys.push(["initiativeAdvantage", "advantage"], ["initiativeDisadvantage", "disadvantage"]);
+      }
+    }
+    const level = Number(actor?.system?.attributes?.exhaustion);
+    const imms = actor?.system?.traits?.ci?.value ?? new Set();
+    // dnd5e: exhaustion levels feed this table under the 2014 rules only.
+    const exhaustionCounts = Number.isFinite(level) && level > 0 && !imms.has?.("exhaustion")
+      && globalThis.dnd5e?.settings?.rulesVersion === "legacy";
+    const out = [];
+    for (const [key, word] of keys) {
+      for (const k of (table[key] ?? [])) {
+        const l = Number(String(k).split("-").pop());
+        let who = null;
+        if (actor?.statuses?.has?.(k) && !imms.has?.(k)) who = CheckGate._conditionName(k);
+        else if (exhaustionCounts && String(k).startsWith("exhaustion-") && Number.isInteger(l) && level >= l) {
+          who = `Exhaustion ${level}`;
+        }
+        if (who) out.push(`${who}: ${word}`);
+      }
+    }
+    return [...new Set(out)];
+  }
+
+  /** A condition's own name, as dnd5e labels it. */
+  static _conditionName(id) {
+    const raw = CONFIG.DND5E?.conditionTypes?.[id]?.name
+      ?? CONFIG.statusEffects?.find?.(s => s.id === id)?.name ?? id;
+    const said = String(game.i18n?.localize?.(raw) ?? raw);
+    return said ? said[0].toUpperCase() + said.slice(1) : String(id);
   }
 
   /**
@@ -1056,24 +1135,7 @@ export class CheckGate {
    *   read it with `CheckGate.totalOf(roll)`, never `roll.total`.
    */
   static async run(actor, kind, key, { dc = null, choice: decided = null } = {}) {
-    // ⚠️🔴 EACH GOES BACK THROUGH ITS OWN METHOD, NEVER A PLAIN SAVE.
-    // `rollDeathSave` is what increments the successes and failures, revives on
-    // a natural twenty, doubles a failure on a natural one and posts the
-    // stabilised-or-died line. `rollConcentration` is what actually breaks
-    // concentration when the check fails. All of that happens inside those
-    // methods, independently of whether a card is created — so suppressing the
-    // card costs nothing, and rolling an ordinary Constitution save instead
-    // would cost the lot.
-    const fn = kind === "skill" ? "rollSkill"
-             : kind === "tool" ? "rollToolCheck"
-             : kind === "death" ? "rollDeathSave"
-             : kind === "concentration" ? "rollConcentration"
-             : kind === "save" ? "rollSavingThrow" : "rollAbilityCheck";
-    if (typeof actor[fn] !== "function") {
-      console.error(`${LOG} | Actor#${fn} is missing on this dnd5e build — nothing rolled.`);
-      ui.notifications?.error(`ACE cannot roll that on this system version — see the console.`);
-      return null;
-    }
+    if (!CheckGate._canRoll(actor, kind)) return null;
 
     const read = CheckGate.read(actor, kind, key);
     const suggested = read.mode > 0 ? "advantage" : read.mode < 0 ? "disadvantage" : "normal";
@@ -1093,6 +1155,45 @@ export class CheckGate {
     }
     if (!choice) return null;                             // cancelled — nothing rolls
 
+    const roll = await CheckGate._throw(actor, kind, key, { read, choice, dc });
+    if (!roll) return null;
+    const luck = await CheckGate._offerLuck(actor, kind, read, roll, dc);
+    await CheckGate.postCard(actor, read, choice, roll, dc, luck);
+    return roll;
+  }
+
+  /**
+   * ⚠️🔴 EACH GOES BACK THROUGH ITS OWN METHOD, NEVER A PLAIN SAVE.
+   * `rollDeathSave` is what increments the successes and failures, revives on
+   * a natural twenty, doubles a failure on a natural one and posts the
+   * stabilised-or-died line. `rollConcentration` is what actually breaks
+   * concentration when the check fails. All of that happens inside those
+   * methods, independently of whether a card is created — so suppressing the
+   * card costs nothing, and rolling an ordinary Constitution save instead
+   * would cost the lot.
+   */
+  static _rollerFor(kind) {
+    return kind === "skill" ? "rollSkill"
+         : kind === "tool" ? "rollToolCheck"
+         : kind === "death" ? "rollDeathSave"
+         : kind === "concentration" ? "rollConcentration"
+         : kind === "save" ? "rollSavingThrow" : "rollAbilityCheck";
+  }
+
+  static _canRoll(actor, kind) {
+    const fn = CheckGate._rollerFor(kind);
+    if (typeof actor?.[fn] === "function") return true;
+    console.error(`${LOG} | Actor#${fn} is missing on this dnd5e build — nothing rolled.`);
+    ui.notifications?.error(`ACE cannot roll that on this system version — see the console.`);
+    return false;
+  }
+
+  /**
+   * The roll alone, at the choice already made: no pause, no card.
+   * @returns {Promise<Roll|null>}
+   */
+  static async _throw(actor, kind, key, { read, choice, dc = null }) {
+    const fn = CheckGate._rollerFor(kind);
     const MODE = { advantage: 1, normal: 0, disadvantage: -1 }[choice] ?? 0;
 
     // ⚠️ SCOPED TO THIS ACTOR AND REMOVED EITHER WAY. A listener left behind
@@ -1145,7 +1246,14 @@ export class CheckGate {
     if (roll._aceOutcome) {
       try { await roll._aceOutcome; } catch (_) { /* reported where it happened */ }
     }
+    return roll;
+  }
 
+  /**
+   * Lucky (2014) on a roll about to fail, after its dice have stopped.
+   * @returns {Promise<object|null>} the luck spent, for the card, or null
+   */
+  static async _offerLuck(actor, kind, read, roll, dc) {
     // ── LUCKY (2014): a check or save about to fail, before its card ──
     // His rule (2026-09-18): asked only when the roll is about to fail, after
     // its dice have stopped. The card throws this roll's dice, so for a holder
@@ -1187,8 +1295,7 @@ export class CheckGate {
       console.warn(`${LOG} | Lucky could not be offered on ${actor.name}'s ${read.label}; it stands as rolled:`, err);
     }
     if (!luck && roll._aceLuck) luck = { ...roll._aceLuck, spent: true };
-    await CheckGate.postCard(actor, read, choice, roll, dc, luck);
-    return roll;
+    return luck;
   }
 
   /**
@@ -1316,6 +1423,14 @@ export class CheckGate {
    * dice is a spoiler.
    */
   static async postCard(actor, read, choice, roll, dc = null, luck = null) {
+    const row = await CheckGate.rowFor(actor, read, choice, roll, dc, luck);
+    const hasDC = row.passed !== null;
+    await CheckGate._postCheckCard({ actor, roll, label: read.label, rows: [row],
+      dcText: hasDC ? `DC ${dc}` : "", flags: { checkCard: true, actorId: actor?.id ?? null } });
+  }
+
+  /** One creature's row on the save card: its die, its named sum, its word. */
+  static async rowFor(actor, read, choice, roll, dc = null, luck = null) {
     const esc = foundry.utils.escapeHTML;
     // A luck point spent on this roll (2014 Lucky) changes the d20 it keeps.
     const total = Number.isFinite(Number(luck?.total)) ? Number(luck.total) : Number(roll?.total);
@@ -1360,8 +1475,7 @@ export class CheckGate {
       luck: luck?.note ? String(luck.note) : null,
       extraHtml: madeOf + tally,
     };
-    await CheckGate._postCheckCard({ actor, roll, label: read.label, rows: [row],
-      dcText: hasDC ? `DC ${dc}` : "", flags: { checkCard: true, actorId: actor?.id ?? null } });
+    return row;
   }
 
   /**
@@ -1370,7 +1484,7 @@ export class CheckGate {
    * of its own.
    */
   static async _postCheckCard({ actor, roll = null, label = "", rows = [], dcText = "", line = null,
-    extra = "", flags = {} }) {
+    extra = "", flags = {}, speaker = null }) {
     try {
       if (roll) {
         const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
@@ -1384,9 +1498,9 @@ export class CheckGate {
         dcWhose: null });
       const body = rows.map(r => SaveEngine.saveResultRowHtml(r, { formulaOnShell: true })).join("");
       const { CardDoor } = await import("./road/doors.mjs");
-      await CardDoor.post({
-        speaker: ChatMessage.getSpeaker({ actor }),
-        rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
+      // Public, applied by the one writer (see the check card above).
+      await CardDoor.post(applyMessageMode({
+        speaker: speaker ?? ChatMessage.getSpeaker({ actor }),
         // ⚠️ NO `rolls` ARRAY. The dice were thrown above; handing them to the
         // message as well makes Dice So Nice animate the same roll a second time.
         content: `<div class="ace-qol-save-results-card ace-qol-save-shell ace-qol-check-card" data-ace-save-shell="1">`
@@ -1395,7 +1509,7 @@ export class CheckGate {
           + extra
           + `</div>`,
         flags: { [MODULE_ID]: { type: "checkResult", ...flags } },
-      });
+      }, "public"));
     } catch (err) {
       console.error(`${LOG} | could not post the card for ${label}:`, err);
       ui.notifications?.warn(`${actor?.name ?? "That creature"} rolled, but no card could be posted.`);

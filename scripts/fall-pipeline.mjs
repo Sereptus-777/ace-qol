@@ -17,6 +17,7 @@
 // dramatic one, because that is the case worth interrupting for.
 // ──────────────────────────────────────────────────────────────────────────────
 
+import { regionTestPoint } from "./foundry-compat.mjs";
 import { MODULE_ID } from "./ace-qol.mjs";
 import {
   resolveFall, autoNegates, slowFallReduction, landingElevation,
@@ -225,7 +226,7 @@ export class FallPipeline {
       // reflects the polygon rather than the band.
       const bottom = Number(region?.elevation?.bottom);
       const probe = Number.isFinite(bottom) ? bottom : elev;
-      return !!region?.testPoint?.({ ...centre, elevation: probe });
+      return regionTestPoint(region, { ...centre, elevation: probe });
     } catch (_) { return false; }
   }
 

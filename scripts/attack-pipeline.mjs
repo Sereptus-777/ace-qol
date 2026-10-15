@@ -46,7 +46,7 @@ import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 // sits at the centre of.
 import { gateOff } from "./why-not.mjs";
 // § 13.3: a monster's AC is not on a card; the wrapper says whose it is.
-import { acSpan, attackSentenceHtml, bonusSpan } from "./chat-render-utils.mjs";
+import { acSpan, attackSentenceHtml, bonusSpan, saveBonusSpan, isPartyActor } from "./chat-render-utils.mjs";
 import { faceOf } from "./face.mjs";
 
 // ─── Profile access for this pipeline (2026-07-28, re-cut 2026-08-25) ────────
@@ -165,6 +165,54 @@ function _aceTargetProfile(actor, token = null) {
 }
 
 export class AttackPipeline {
+
+  /**
+   * The bonus chips of a FLAT attack, or null when the attack is not flat.
+   *
+   * ⚠️🔴 A FLAT ATTACK ADDS ONE NUMBER AND NOTHING ELSE (dnd5e 5.3.3,
+   * AttackActivity#getAttackData: `if (this.attack.flat) return
+   * constructParts({ toHit: this.attack.bonus })`). His table, 2026-10-14: the
+   * Spiritual Weapon card read "-5 INT +6 PROF +5 SUMMON". The -5 was the weapon
+   * creature's own Intelligence, which no flat roll adds, and "+5 SUMMON" was a
+   * leftover invented to cancel it. The total was right; every label was wrong.
+   *
+   * A summon whose attack dnd5e matched to its caster (Spiritual Weapon, and any
+   * summon with "match attacks") rolls the CASTER's spell attack: the caster's
+   * spellcasting modifier and proficiency, named as the caster's. Any other flat
+   * attack shows the one number its sheet writes.
+   *
+   * @returns {string[]|null}  chip HTML, adding up to the roll's own bonus
+   */
+  static _flatAttackChips(item, actor, activity, d20, rollTotal) {
+    try {
+      const acts = item?.system?.activities;
+      const act = activity?.attack ? activity
+        : [...(acts?.values?.() ?? Object.values(acts ?? {}))].find(a => a?.type === "attack");
+      if (act?.attack?.flat !== true) return null;
+      const total = (Number.isFinite(Number(rollTotal)) ? Number(rollTotal) : d20) - d20;
+      const sign = (n) => (n >= 0 ? `+${n}` : `${n}`);
+      const chip = (n, label, tip = "") => `<span class="ace-qol-mod-chip"${tip ? ` data-tooltip="${foundry.utils.escapeHTML(tip)}"` : ""}>`
+        + `<span class="ace-qol-mod-num">${sign(n)}</span><span class="ace-qol-mod-label">${label}</span></span>`;
+      const origin = actor?.flags?.dnd5e?.summon?.origin;
+      let caster = null;
+      try { caster = origin ? (fromUuidSync(origin)?.actor ?? null) : null; } catch (_) { caster = null; }
+      if (!caster) return [chip(total, "ATTACK", `${item?.name ?? "This attack"}'s own bonus`)];
+      const whose = `${caster.name}'s spell attack`;
+      const out = [];
+      const key = String(caster.system?.attributes?.spellcasting ?? "");
+      const abilityMod = key ? (Number(caster.system?.abilities?.[key]?.mod) || 0) : 0;
+      if (key) out.push(chip(abilityMod, key.toUpperCase(), whose));
+      const prof = Number(caster.system?.attributes?.prof) || 0;
+      if (prof) out.push(chip(prof, "PROF", whose));
+      const rest = total - abilityMod - prof;
+      if (rest) out.push(chip(rest, AttackPipeline._attackBonusSourceLabel(caster) ?? "BONUS", whose));
+      if (!out.length) out.push(chip(total, "ATTACK", whose));
+      return out;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not name a flat attack's bonus; the card shows its parts the old way:`, err);
+      return null;
+    }
+  }
 
   /**
    * WHAT is giving this creature its attack bonus? Returns a short label for
@@ -1646,9 +1694,13 @@ export class AttackPipeline {
       + `<span class="ace-qol-atk-d20-result">${d20}</span>`
       + `</span>`
     );
+    // A flat attack adds one number: its chips are that number's own (a summon's
+    // are its caster's), and none of the attacker's stats below.
+    const _flat = AttackPipeline._flatAttackChips(item, actor, activity, d20, rollTotal);
+    if (_flat) formulaParts.push(..._flat);
     // Always show the ability label so users know which stat is used (even when +0)
-    formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span></span>`);
-    if (profBonus) {
+    if (!_flat) formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span></span>`);
+    if (!_flat && profBonus) {
       formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${profBonus}</span><span class="ace-qol-mod-label">PROF</span></span>`);
     }
 
@@ -1657,13 +1709,13 @@ export class AttackPipeline {
     // item schemas (Dawnbringer, etc.). Without coercion, downstream
     // math switches to string concatenation: 5 + 3 + "2" + 0 = "820".
     const magicBonus = Number(item.system?.magicalBonus) || 0;
-    if (magicBonus) {
+    if (!_flat && magicBonus) {
       formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${magicBonus}</span><span class="ace-qol-mod-label ace-qol-mod-magic">MAGIC</span></span>`);
     }
 
     // Check for attack bonus from item
     const itemAtkBonus = item.system?.attack?.bonus ? parseInt(item.system.attack.bonus) || 0 : 0;
-    if (itemAtkBonus) {
+    if (!_flat && itemAtkBonus) {
       formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${itemAtkBonus}</span><span class="ace-qol-mod-label">ITEM</span></span>`);
     }
 
@@ -1681,7 +1733,7 @@ export class AttackPipeline {
                        + (Number(itemAtkBonus) || 0);
     const expectedBonus = (Number(rollTotal) || d20) - d20;
     const missingBonus = expectedBonus - displayedSum;
-    if (missingBonus !== 0 && Number.isFinite(missingBonus)) {
+    if (!_flat && missingBonus !== 0 && Number.isFinite(missingBonus)) {
       const isSummon = !!actor?.flags?.dnd5e?.summon;
 
       // ── Source attribution for the unaccounted-for modifier ──
@@ -1751,8 +1803,25 @@ export class AttackPipeline {
                       : "ace-qol-result-miss";
 
     // ── Target rows: the GM's row and the table's row, side by side ──
+    /* ⚠️ WHY THE ROLL HAD ADVANTAGE SITS WITH ADV, UNDER THE PORTRAIT (his rule,
+       2026-10-13: "The green ADV and the two green reason lines stay that green,
+       and they sit under the portrait so the title has the width."). The roll's
+       own lines (ROLL: ADVANTAGE and each reason for it) go to the header, once
+       however many targets share them; cover, immunity and the rest stay on the
+       target they are about. */
+    const _headTags = [];
+    const _headSeen = new Set();
     const rowPairs = results.map(r => {
-      const tags = CombatState.getSummaryTags(r);
+      const _rollLines = new Set(["ROLL: ADVANTAGE", "ROLL: DISADVANTAGE",
+        ...(r.advantageSources ?? []).map(x => x?.reason),
+        ...(r.disadvantageSources ?? []).map(x => x?.reason)].filter(Boolean));
+      const _all = CombatState.getSummaryTags(r);
+      for (const t of _all) {
+        if (!_rollLines.has(t.label) || _headSeen.has(t.label)) continue;
+        _headSeen.add(t.label);
+        _headTags.push(t);
+      }
+      const tags = _all.filter(t => !_rollLines.has(t.label));
       const tagHtml = tags.map(t =>
         `<span class="ace-qol-tag ace-qol-tag-${t.type}"><i class="fas ${t.icon}"></i> ${t.label}</span>`
       ).join("");
@@ -1876,10 +1945,41 @@ export class AttackPipeline {
     // the same header as the player's. The attacker's portrait, square, and
     // 'Attacks <the target>.' Not the fist picture. Not the word Fist. The
     // portrait is the bigger size the player's just got.").
+    // ⚠️ THE HEADER PORTRAIT SITS IN THE STONE (his rule, 2026-10-13): the well
+    // around it is what recesses it; a portrait in the black body has no well.
     const _attackerPortrait = _attackerFace
-      ? `<img src="${_attackerFace}" class="ace-qol-atk-portrait ace-qol-atk-attacker ace-face" alt="" />`
-      : `<span class="ace-qol-atk-portrait ace-qol-atk-attacker"></span>`;
-    const _attacksLine = `<strong class="ace-qol-atk-item-name ace-qol-atk-attacks">Attacks ${_whom}.</strong>`;
+      ? `<span class="ace-qol-head-well"><img src="${_attackerFace}" class="ace-qol-atk-portrait ace-qol-atk-attacker ace-face" alt="" /></span>`
+      : `<span class="ace-qol-head-well"><span class="ace-qol-atk-portrait ace-qol-atk-attacker"></span></span>`;
+    /* ⚠️ WHO, "attacks", WHOM, ON ONE LINE (his rule, 2026-10-13: "One line across
+       the header: the attacker's name, then 'attacks', then the target. On this
+       roll that is 'Jeth attacks Shield Guardian'."). The attacker by the name
+       his token carries, which is the name the table already reads on the map. */
+    const _attackerName = _escName(ChatMessage.getSpeaker({ actor })?.alias || actor?.name || "");
+    const _attacksLine = `<strong class="ace-qol-atk-item-name ace-qol-atk-attacks">`
+      + `${_attackerName ? `${_attackerName} attacks` : "Attacks"} ${_whom}</strong>`;
+    const _headWhy = (rollModeLabel || _headTags.length)
+      ? `<div class="ace-qol-atk-head-why">${rollModeLabel}`
+        + _headTags.map(t => `<span class="ace-qol-tag ace-qol-tag-${t.type}"><i class="fas ${t.icon}"></i> ${t.label}</span>`).join("")
+        + `</div>`
+      : "";
+    /* ⚠️🔴 A PARTY MEMBER'S OWN ATTACK SHOWS HIS OWN ROLL LINE (his rule,
+       2026-10-12: "The GM card is right: 8 +5 DEX +4 PROF = 17, then HIT. The
+       player card says 'Rolled an 8 and hit' and hides his bonuses. This is
+       Jeth's own attack. Print the same roll line on his card, capitals, then hit
+       or miss. Do not print the creature's AC on the player card. Do not go back
+       to 'Rolled an 8 and hit.'"). The GM's own die, chips and total, wrapped as
+       the attacker's (saveBonusSpan: the roller's own sum, kept on every copy for
+       a party member and cut to the GM's for a creature). The rows under it keep
+       the word and never the AC. A creature's attack keeps the sentence. */
+    const _ownRollLine = isPartyActor(_atkWhose)
+      ? `<span class="ace-qol-atk-formula">${_die}`
+        + `${_maths ? ` ${saveBonusSpan(_maths, _atkWhose)}` : ""}`
+        + saveBonusSpan(`<span class="ace-qol-atk-result-chip">`
+          + `<span class="ace-qol-atk-equals">=</span>`
+          + `<span class="ace-qol-atk-total ${resultClass}">${rollTotal}</span>`
+          + `</span>`, _atkWhose)
+        + `</span>`
+      : "";
     const tableCard = `
         <div class="ace-qol-atk-table ace-qol-table-only">
           <div class="ace-qol-atk-header">
@@ -1887,19 +1987,16 @@ export class AttackPipeline {
             ${_attacksLine}
           </div>
           <div class="ace-qol-atk-roll">
-            <span class="ace-qol-mod-die">
+            ${_ownRollLine || `<span class="ace-qol-mod-die">
               <img class="ace-qol-atk-d20-img" src="${_bd20}" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">
               <i class="fas fa-dice-d20 ace-qol-atk-d20-fallback" style="display:none"></i>
             </span>
-            ${attackSentenceHtml(d20, results)}
+            ${attackSentenceHtml(d20, results)}`}
           </div>
           <div class="ace-qol-atk-results">
             ${tableRows}
           </div>
         </div>`;
-
-    // Collapsible item details (embeds the dnd5e description + property tags)
-    const itemDetailsHtml = await this._buildItemDetails(item);
 
     const cardHtml = `
       <div class="ace-qol-attack-card">
@@ -1908,12 +2005,8 @@ export class AttackPipeline {
         <div class="ace-qol-atk-header">
           ${_attackerPortrait}
           ${_attacksLine}
-          <button type="button" class="ace-qol-atk-info-toggle" data-action="toggleItemDetails" title="Show item details" aria-expanded="false">
-            <i class="fas fa-chevron-down"></i>
-          </button>
-          ${rollModeLabel}
+          ${_headWhy}
         </div>
-        <div class="ace-qol-atk-item-details ace-qol-collapsed">${itemDetailsHtml}</div>
         <div class="ace-qol-atk-roll">
           <span class="ace-qol-atk-formula">
             ${formulaStr}
@@ -2016,19 +2109,22 @@ export class AttackPipeline {
       + `<span class="ace-qol-atk-d20-result">${d20}</span>`
       + `</span>`
     );
-    parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span></span>`);
-    if (profBonus) {
+    // A flat attack adds one number (see _flatAttackChips): the same chips here.
+    const _flat = AttackPipeline._flatAttackChips(item, actor, activity, d20, r0?.attackTotal);
+    if (_flat) parts.push(..._flat);
+    if (!_flat) parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span></span>`);
+    if (!_flat && profBonus) {
       parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${profBonus}</span><span class="ace-qol-mod-label">PROF</span></span>`);
     }
     // Coerce magicalBonus to a number — dnd5e stores it as a string on some
     // items (e.g. Dawnbringer). Without coercion the delta math below uses
     // string concatenation and produces nonsense like "-810 BONUS".
     const magicBonus = Number(item.system?.magicalBonus) || 0;
-    if (magicBonus) {
+    if (!_flat && magicBonus) {
       parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${magicBonus}</span><span class="ace-qol-mod-label ace-qol-mod-magic">MAGIC</span></span>`);
     }
     const itemAtkBonus = item.system?.attack?.bonus ? parseInt(item.system.attack.bonus) || 0 : 0;
-    if (itemAtkBonus) {
+    if (!_flat && itemAtkBonus) {
       parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${itemAtkBonus}</span><span class="ace-qol-mod-label">ITEM</span></span>`);
     }
 
@@ -2041,7 +2137,7 @@ export class AttackPipeline {
                        + (Number(itemAtkBonus) || 0);
     const expectedBonus = (Number.isFinite(rollTotal) ? rollTotal : d20) - d20;
     const missingBonus = expectedBonus - displayedSum;
-    if (missingBonus !== 0 && Number.isFinite(missingBonus)) {
+    if (!_flat && missingBonus !== 0 && Number.isFinite(missingBonus)) {
       const isSummon = !!actor?.flags?.dnd5e?.summon;
       // Same attribution as the main card — this path was showing a bare
       // "+2 BONUS" too, and half-naming a modifier is worse than not naming it.
@@ -2349,86 +2445,6 @@ export class AttackPipeline {
 
     // Genuinely unclassifiable — don't false-block a legitimate action.
     return { blocked: false, distanceFt, rangeDesc: "", isRanged: false };
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  Item Details (collapsible) — embeds the dnd5e item description + tags
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  async _buildItemDetails(item) {
-    const sys = item?.system ?? {};
-
-    // Description: enrich so links / inline rolls / references resolve
-    let desc = sys.description?.value ?? "";
-    try {
-      const TE = foundry.applications?.ux?.TextEditor?.implementation
-              ?? globalThis.TextEditor;
-      if (TE?.enrichHTML) {
-        desc = await TE.enrichHTML(desc, {
-          rollData: item.actor?.getRollData?.() ?? {},
-          relativeTo: item,
-          secrets: false,
-        });
-      }
-    } catch (err) {
-      console.warn(`${MODULE_ID} | enrichHTML failed for ${item.name}:`, err);
-    }
-
-    // Property tags — match what dnd5e shows on its item cards
-    const tags = [];
-
-    // Activation type (ACTION / BONUS / REACTION)
-    const activationType = sys.activation?.type ?? sys.activities?.contents?.[0]?.activation?.type;
-    if (activationType) tags.push(String(activationType).toUpperCase());
-
-    // Range / reach
-    // ⚠️🔴 THE CARD MUST NOT PRINT A DIFFERENT REACH THAN THE GATE USED.
-    // This read the item's range slot only — no activity, no description
-    // fallback — so a Spiked Chain whose reach lives in its description showed
-    // no REACH tag at all while the range check happily used 10 feet. A card that
-    // disagrees with the rule it is reporting is worse than a card with no tag.
-    // ⚠️ `repair: false` — a card can re-render many times and rendering is
-    // not a swing. The write-back belongs to the attack path.
-    const reach     = resolveReach(item, sys.activities?.contents?.[0] ?? null, { repair: false }).reachFt;
-    const rangeVal  = sys.range?.value;
-    const rangeLong = sys.range?.long;
-    const rangeUnits = sys.range?.units ?? "ft";
-    if (reach && !rangeLong)            tags.push(`REACH ${reach} ${rangeUnits.toUpperCase()}`);
-    else if (rangeVal && rangeLong)     tags.push(`RANGE ${rangeVal}/${rangeLong} ${rangeUnits.toUpperCase()}`);
-    else if (rangeVal && !reach)        tags.push(`RANGE ${rangeVal} ${rangeUnits.toUpperCase()}`);
-
-    if (sys.attuned || sys.attunement === "attuned")     tags.push("ATTUNED");
-    if (sys.equipped)                                    tags.push("EQUIPPED");
-    if (sys.proficient || sys.prof?.hasProficiency)      tags.push("PROFICIENT");
-    if (sys.magicalBonus || sys.properties?.has?.("mgc")) tags.push("MAGICAL");
-
-    // Weapon mastery (Sap, Vex, Topple, etc.)
-    const mastery = sys.mastery;
-    if (mastery) {
-      const masteryLabel = CONFIG?.DND5E?.weaponMasteries?.[mastery]?.label
-        ?? CONFIG?.DND5E?.weaponMasteries?.[mastery]
-        ?? mastery;
-      tags.push(`MASTERY: ${String(masteryLabel).toUpperCase()}`);
-    }
-
-    // Weapon properties (Finesse, Light, Versatile, Two-Handed, Heavy, Reach, etc.)
-    const propsCfg = CONFIG?.DND5E?.itemProperties ?? {};
-    const propsSet = sys.properties;
-    if (propsSet) {
-      const propIter = (propsSet instanceof Set) ? [...propsSet] : Object.keys(propsSet);
-      for (const p of propIter) {
-        const label = propsCfg[p]?.label ?? propsCfg[p] ?? p;
-        // Skip the magical bookkeeping property (already shown as MAGICAL above)
-        if (p === "mgc") continue;
-        tags.push(String(label).toUpperCase());
-      }
-    }
-
-    const tagsHtml = tags.length
-      ? `<div class="ace-qol-atk-itemtags">${tags.map(t => `<span class="ace-qol-atk-itemtag">${t}</span>`).join("")}</div>`
-      : "";
-
-    return `<div class="ace-qol-atk-itemdesc">${desc || "<em>No description.</em>"}</div>${tagsHtml}`;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

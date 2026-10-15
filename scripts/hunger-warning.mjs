@@ -129,9 +129,9 @@ export const HungerWarning = {
     // unreadable cards. Body text at 15-16px because this sits over Foundry's
     // own chrome.
     const content = `
-      <div style="background:#0f1014;border:1px solid #3a3122;border-left:4px solid #d4af37;
-                  border-radius:5px;padding:12px 14px;">
-        <div style="font-size:18px;font-weight:700;color:#d4af37;margin-bottom:2px;">A new day</div>
+      <div style="background:#0f1014;border:1px solid #d4af37;
+                  border-radius:4px;padding:12px 14px;">
+        <div class="ace-qol-card-head" style="font-size:18px;font-weight:700;color:#f5d060;margin:-12px -14px 6px;padding:8px 14px;border-radius:4px 4px 0 0;">A new day</div>
         ${body}
         <div style="margin-top:8px;color:#8a8168;font-size:13px;">
           Rations, foraging or a hunt today will clear this before the next long rest.

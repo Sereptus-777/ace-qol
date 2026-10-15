@@ -86,8 +86,10 @@ console.log("\nTOP TO BOTTOM");
   check("line 1 is the caster's portrait and one sentence",
     /static castLineHtml\(casterActor, title, targetNames/.test(save)
     && /ace-qol-save-caster-img ace-qol-save-portrait/.test(save), "not the spell's icon");
+  // A caller may name its own verb (the hour's cold "calls for a" save,
+  // 2026-10-13); left out, a feature is used and a spell is cast.
   check("a feature is used and a spell is cast",
-    /\$\{isSpell \? "casts" : "uses"\}/.test(save), "a claw is not cast");
+    /\(isSpell \? "casts" : "uses"\)/.test(save), "a claw is not cast");
 
   // 2. The quiet line.
   check("line 2 is one quiet line, from one reader",

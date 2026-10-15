@@ -208,56 +208,43 @@ console.log("\n3. TWO SOURCES, ONE CHARMED, ONE CLIP");
     /refreshed/.test(read("scripts/condition-library.mjs")), "0.63.0, same caster");
 }
 
-/* ══ 4. A NEW ACE CARD TAKES THE LOG TO IT ════════════════════════════════ */
-console.log("\n4. CHAT SITS ON THE NEW CARD");
+/* ══ 4. EVERY CARD TAKES THE CHAT TO THE BOTTOM, EVERY TIME ═══════════════ */
+console.log("\n4. EVERY CARD, EVERY TIME: FOUNDRY'S OWN SCROLL");
 {
-  // ⚠️🔴 THE FIRST PASS SCROLLED TOO EARLY, AND THESE PINS WERE GREEN OVER IT.
-  // Foundry's ChatLog##postOne awaits renderMessage (which fires the render
-  // hook) and THEN appends, so both createChatMessage and renderChatMessageHTML
-  // run while the card is still detached: the log scrolled to the bottom of a
-  // log the new card was not in. So the pin is now on the WAIT, not on the call.
-  check("the scroll waits until the card is actually in the log",
-    /if \(inTheLog\(\)\) \{ followTheLog\(/.test(chat)
-    && /requestAnimationFrame\(whenInTheDom\);/.test(chat),
-    "a condition, not a delay");
-  check("and one frame is the tick, because a microtask runs before the append",
-    /anything queued during the/.test(chat) && /hook runs first/.test(chat),
-    "the append is the continuation of that await");
-  check("it gives up out loud rather than looping forever",
-    /if \(\+\+frames > 30\)/.test(chat)
-    && /never reached the chat log/.test(chat), "bounded, and it says so");
-  check("a new card is marked at creation and scrolled from the render pass",
-    /_newCards\.add\(message\.id\);/.test(chat)
-    && /if \(!message\?\.id \|\| !_newCards\.has\(message\.id\)\) return;/.test(chat),
-    "created in this session AND now on screen");
-  check("consumed once, so a re-render never moves the log again",
-    /_newCards\.delete\(message\.id\);/.test(chat), "a redraw is not a new card");
-  // ⚠️🔴 AND IT IS THE BOTTOM OF THE LOG, NOTHING CLEVERER (his rule,
-  // 2026-09-30: "Do not scroll-to-card. Do not wait on images. Do not add
-  // padding. Bottom of the log."). Waiting on images waits for every picture in
-  // the WHOLE log, which arrives late enough to read as not scrolling at all.
-  check("it does not wait on images",
-    !/log\.scrollBottom\(\{[^}]*waitImages/.test(chat),
-    "waiting on images waits for every picture in the whole log");
-  // ⚠️ AND HE ASKED FOR THE LAST MESSAGE IN VIEW AFTER ALL (2026-10-01), which
-  // reverses "do not scroll-to-card" from the day before. It is the one move that
-  // does not depend on having picked the right box, so it is now the last step.
-  // The whole rule is pinned in section 9, in one place, because three copies of
-  // it across three sections drifted apart twice in one evening.
-  check("the last message is brought into view — section 9 has the rule",
-    /last\?\.scrollIntoView\?\.\(\{ block: "end", behavior: "instant" \}\);/.test(chat),
-    "his words, and it supersedes the day before");
+  /* ⚠️🔴 HIS RULE, 2026-10-12, which replaces every scroll rule before it: "Every
+   * card, every time. A message posted to chat calls ui.chat.scrollBottom({
+   * popout: true, waitImages: true }) after that card is in the log. The next
+   * card calls it again. Not the first card of a session, not ACE cards only, not
+   * once. Sidebar and popout both. Do not set scrollTop. Do not walk the nine
+   * candidates. If the card is not in the log on that frame, call it again when
+   * it is." */
+  const block = chat.slice(chat.indexOf("export function registerChatScroll"),
+    chat.indexOf("export function scrollChatToEnd"));
+  check("Foundry's own call, sidebar and popout, after the pictures",
+    /ui\.chat\.scrollBottom\(\{ popout: true, waitImages: true \}\)/.test(chat), "his words");
+  check("every message, not ACE cards only",
+    /Hooks\.on\("createChatMessage", \(message\) => \{/.test(block) && !/isAceCard/.test(block),
+    "not ACE cards only");
   check("whoever the speaker is",
-    !/author/.test(chat.slice(chat.indexOf("export function takeLogToNewCard"))),
-    "his words: including when the speaker is the monster");
-  check("only ACE's cards",
-    /if \(!isAceCard\(message\)\) return;/.test(chat), "nothing global");
-  check("and only a card this screen can see",
-    /if \(message\.visible === false\) return;/.test(chat), "a whisper past this screen");
-  check("registered once, through the chrome pass every ACE card already uses",
-    /registerAceCardScroll\(\);/.test(chat) && /if \(_scrollRegistered\) return;/.test(chat)
-    && /takeLogToNewCard\(message, el\);/.test(chat),
-    "one place, all four modules");
+    !/author/.test(block), "Foundry's own scroll already covers his own; this covers everyone's");
+  check("only a message this screen shows",
+    /if \(message\?\.visible === false\) return;/.test(block), "a whisper past this screen is never in this log");
+  check("called on the next frame, and again on the frame the card is in the log",
+    /if \(there \|\| !called\) scrollChatToEnd\(/.test(block) && /_nextFrame\(look\);/.test(block),
+    "the append comes after every render hook");
+  check("in the log means the sidebar's or the popout's, never the notification strip",
+    chat.includes('const sel = `.chat-log [data-message-id="${id}"]`;')
+    && /ui\.chat\?\.popout\?\.element\?\.querySelector\?\.\(sel\)/.test(chat), "sidebar and popout both");
+  check("bounded, and it says so",
+    /if \(\+\+frames > 180\)/.test(block) && /never reached the chat log/.test(block), "a condition, not a delay");
+  check("no scrollTop is set anywhere in the chat code",
+    !/scrollTop\s*=/.test(chat), "his words: do not set scrollTop");
+  check("and no candidate walk is left",
+    !/measureChatPanes|scrollIntoView|realLogCopyOf/.test(chat), "do not walk the nine candidates");
+  check("registered once, from the chrome pass",
+    /registerChatScroll\(\);/.test(chat) && /if \(_scrollRegistered\) return;/.test(chat), "one place");
+  check("the save card no longer holds the GM's place in the chat",
+    !/_preserveChatScroll/.test(read("scripts/save-engine.mjs")), "it wrote scrollTop back for a second");
 }
 
 /* ══ 6. A SECOND CASTER DOES NOT DELETE THE FIRST ═════════════════════════ */
@@ -467,19 +454,10 @@ console.log("\n8. NAMED FOR ITS CASTER, THE BOTTOM OF THE LOG, THE PORTRAIT ROW"
   check("a same-caster refresh keeps the name, and fixes an old one",
     /if \(_want && _want !== _twin\.name/.test(lib), "still named for them");
 
-  // 2. The scrollbar: the wait on the card being in the log. Everything else
-  //    about it is section 9's.
-  check("it waits for the card to be in the log, not merely attached",
-    /const inTheLog = \(\) => !!el\?\.closest\?\.\("#chat-log, \.chat-log"\);/.test(chat),
-    "that is the element whose scrollbar moves");
-  check("and the card path asks for one pass, not a set of moments",
-    /if \(inTheLog\(\)\) \{ followTheLog\(/.test(chat)
-    && /export function followTheLog\(why, _cardEl = null\) \{/.test(chat)
-    && /scrollChatToEnd\(why\);/.test(chat),
-    "once, at the end — section 9");
-  check("no padding, and nothing waits on an image",
-    !/waitImages/.test(chat.slice(chat.indexOf("export function scrollChatToEnd"))),
-    "his don'ts, minus the one he reversed");
+  // 2. The scrollbar: section 4 holds the whole rule (2026-10-12).
+  check("the chat scroll is Foundry's own, and it waits on the pictures",
+    /waitImages: true/.test(chat.slice(chat.indexOf("export function scrollChatToEnd"))),
+    "his rule of 2026-10-12 reverses 09-30's \"do not wait on images\"");
 
   // 3. The damage row.
   const header = dmg.slice(dmg.indexOf('class="ace-qol-dmg-row-header"'));
@@ -522,77 +500,11 @@ console.log("\n9. THE BAR, THE DAMAGE ROW, AND THE SECOND CARD'S FALSE ERROR");
   const dmg = read("scripts/damage-card-renderer.mjs");
   const css = read("styles/ace-qol.css");
 
-  /* 1. THE BAR: EVERY PANE, ONE PASS, AT THE END.
-   *
-   * ⚠️🔴 TWICE I FOUND "THE" SCROLLER, REPORTED IT AT ITS MAXIMUM, AND LEFT HIS
-   * BAR WHERE IT WAS. 0.75.0 took the first ancestor that scrolled: 90px of
-   * travel, a wrapper. 0.76.0 took the one with the most travel and followed the
-   * log: div.chat-scroll reported at the bottom, and "the bar did not move. That
-   * element is not the thumb he drags."
-   *
-   * So this stops choosing. His rule, 2026-10-01: "Set scrollTop = scrollHeight
-   * on every one of these that exists: the sidebar chat, #chat-log, .chat-scroll,
-   * div.chat-scroll, the popout, and the element that actually owns the visible
-   * thumb. Then scroll the last message into view. Do it once, at the end."
-   *
-   * Every candidate is driven, the widest-travel one is NAMED as the thumb, and
-   * the last message is brought into view — which is the one move that does not
-   * depend on having picked the right box at all. */
-  /* ⚠️🔴 AND THE SCAN WAS BLIND. 0.77.0 reported "no chat pane has a scrollbar,
-   * so there was nothing to move" while the log was visibly cut off — a claim
-   * about the chat drawn from a list that may never have contained the chat. His
-   * rule: measure every candidate, log tag, id, class, scrollHeight,
-   * clientHeight and overflow, and if none qualify say so and name what was
-   * measured.
-   *
-   * Part of what blinded it: the messages were looked for through
-   * `#chat-log [data-message-id]`, so if the log is not called that here, the
-   * ancestor walk — the only path that cannot miss the real scroller — never ran
-   * at all. */
-  check("every candidate is measured, not only the ones that pass",
-    /function measureChatPanes\(\) \{/.test(chat)
-    && /scrolls: scrollHeight > clientHeight \+ 1,/.test(chat),
-    "measure first, decide second");
-  check("and tag, id, class, scrollHeight, clientHeight and overflow are all logged",
-    /overflow = `\$\{cs\.overflow\}\/\$\{cs\.overflowY\}`;/.test(chat)
-    && /scrollHeight=\$\{p\.scrollHeight\} clientHeight=\$\{p\.clientHeight\}/.test(chat)
-    && /overflow=\$\{p\.overflow\} travel=\$\{p\.travel\}/.test(chat), "his list");
-  check("his named candidates are all in the scan",
-    /"#chat", "#chat-log", "\.chat-log", "\.chat-scroll", "\.chat-scroll\.overflowed",/.test(chat)
-    && /"#chat-popout", "\.chat-popout"/.test(chat), "his list, not my pick of it");
-  // ⚠️ AND `.chat-scroll.overflowed` IS LISTED IN ITS OWN RIGHT. Foundry's
-  // `#setOverflowing` puts that class on the pane whose content is taller than it
-  // is: the app's own definition of the bar he drags.
-  check("the pane Foundry marks as overflowing is a candidate by name",
-    /"\.chat-scroll\.overflowed"/.test(chat), "#setOverflowing toggles it");
-  check("including whatever Foundry itself holds, sidebar and popout",
-    /look\(ui\.chat\?\.element, "ui\.chat\.element"\);/.test(chat)
-    && /look\(ui\.chat\?\.popout\?\.element, "popout element"\);/.test(chat), "named separately");
-  check("and every parent of the last message",
-    /look\(box, `parent \$\{depth\} of the last message`\);/.test(chat),
-    "the only path that cannot miss the element holding the bar");
-  /* ⚠️🔴 AND IT IS NEVER THE NOTIFICATION COPY. His audit, read out of the
-   * DOM: "There are two ol.chat-log in the document, and lastChatMessage() takes
-   * the last [data-message-id] anywhere, so it walked the short one... Its
-   * div.chat-scroll is 1117/1117 and has no overflowed class."
-   *
-   * Foundry's own `_toggleNotifications` builds a SECOND `.chat-log` inside
-   * `#chat-notifications` holding copies of recent messages under the SAME ids,
-   * which is why dice-hold's note says the log copy and the notification copy
-   * share one. The last `[data-message-id]` in the document is that copy. */
-  check("the last message is found in the real log, never the notification strip",
-    /function lastChatMessage\(\) \{/.test(chat)
-    && /\.filter\(el => !inTheNotifications\(el\)\);/.test(chat),
-    "two ol.chat-log, one of them 733px");
-  check("and a message's own pane is found by class, not by document order",
-    /export function realLogCopyOf\(id\) \{/.test(chat)
-    && /const rank = \(overflowed \? 2 : 0\) \+ \(travel > 1 \? 1 : 0\);/.test(chat),
-    "overflowed first, then travel");
-  check("1117/1117 is called out as the notification copy, by his own test",
-    /no travel, so this is `/.test(chat)
-    && /very likely still the notification copy/.test(chat), "his words");
-  check("a save card reaches the bottom when its hold is released",
-    /takeTheRealLogToBottom\(id, "the card is no longer held for this screen's dice"\)/
+  /* 1. THE BAR. The 10-01 rule (every candidate pane measured, scrollTop set on
+   * each, the last message pulled into view) is replaced by his rule of
+   * 2026-10-12, pinned in section 4. What is left here is the held card. */
+  check("a held card takes the chat to the bottom when its hold is released",
+    /scrollChatToEnd\(`the card is no longer held for this screen's dice/
       .test(read("scripts/dice-hold.mjs")),
     "the moment only dice-hold knows about");
   check("and two frames later, because it has just come back from display:none",
@@ -605,20 +517,6 @@ console.log("\n9. THE BAR, THE DAMAGE ROW, AND THE SECOND CARD'S FALSE ERROR");
     /typeof requestAnimationFrame === "function"/.test(read("scripts/dice-hold.mjs"))
     && /: setTimeout\(fn, 0\)\)/.test(read("scripts/dice-hold.mjs")),
     "the replay runs this file with no browser at all");
-  check("the last message goes into view first",
-    /last\?\.scrollIntoView\?\.\(\{ block: "end", behavior: "instant" \}\);/.test(chat),
-    "it does not depend on identifying the right box");
-  check("then every pane that scrolls is driven",
-    /for \(const p of scrollers\) p\.el\.scrollTop = p\.el\.scrollHeight;/.test(chat), "his line");
-  check("each one reads back AT MAX or how far short it is",
-    /\? "AT MAX" : `SHORT by \$\{travel - top\}`/.test(chat), "his words");
-  check("none qualifying is reported as a measurement, not as nothing to move",
-    /none of those \$\{panes\.length\} candidates has a scrollbar/.test(chat)
-    && /the element holding it is not in that list and its name is what is /.test(chat),
-    "do not claim there was nothing to move");
-  check("and if the bar he drags is still short it says so",
-    /is still \$\{travel - top\}px SHORT /.test(chat)
-    && /Do not read the lines above as a success/.test(chat), "his rule");
 
   // 2. The damage row.
   // ⚠️ THE GRAY BOX IS GONE, AND THE TYPE-COLOUR PILL IS NOT THAT BOX. The click

@@ -54,6 +54,16 @@ export function spellKey(name) {
  * Returns null when there was no bonus to remove, so a caller can tell the
  * difference between "already the base name" and "stripped down to it".
  */
+/**
+ * Is this item the Spiritual Weapon spell, either edition, however it was
+ * imported ("Spiritual Weapon (Legacy)", "Spiritual Weapon (2/Day)")? Its attack
+ * is made by a floating weapon it places, not by the caster
+ * (spiritual-weapon.mjs, his call 2026-10-14).
+ */
+export function isSpiritualWeapon(item) {
+  return item?.type === "spell" && spellKey(item?.name) === "spiritual weapon";
+}
+
 export function baseKey(name) {
   const key = spellKey(name);
   const bare = key.replace(/\s*[+-]\d+\s*$/, "").trim();

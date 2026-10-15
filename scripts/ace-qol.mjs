@@ -1,3 +1,4 @@
+// FOUNDRY 14 IS IN PROGRESS (2026-10-14): the manifest's maximum stays 13 until measured templates have a region fallback that has been booted on 14.
 // ─── ACE: Quality of Life — Entry Point ───────────────────────────────────────
 // Combat automation for dnd5e 5.x on Foundry V13. One module, no dependency
 // chain. New worlds start on the Conservative preset.
@@ -14,6 +15,7 @@
 
 export const MODULE_ID = "ace-qol";
 
+import { messageModeName } from "./foundry-compat.mjs";
 import { QolSettings }       from "./settings.mjs";
 import { whyNoAura } from "./aura-diagnose.mjs";
 import { whyNoCondition } from "./why-no-condition.mjs";
@@ -28,6 +30,8 @@ import { readWeather, describeWeather } from "./rules/weather.mjs";
 import { ActionGate } from "./gate/action-gate.mjs";
 import { installSliderGuard } from "./slider-guard.mjs";
 import { DayRollover }       from "./day-rollover.mjs";
+import { Exposure }          from "./exposure.mjs";
+import { registerExhaustion } from "./exhaustion.mjs";
 import { HungerWarning }     from "./hunger-warning.mjs";
 import { RestRaw }           from "./rest-raw.mjs";
 import { installHookDebugGuard, setHookDebug } from "./hook-debug-guard.mjs";
@@ -86,6 +90,7 @@ import { PresenceEngine }       from "./presence-engine.mjs";
 import { BreathAnimator }       from "./breath-animator.mjs";
 import { EffectSweeper }        from "./effect-sweeper.mjs";
 import { CreatureTriggers }     from "./creature-triggers.mjs";
+import { SpiritualWeapon }      from "./spiritual-weapon.mjs";
 import { GrappleTurn } from "./grapple-turn.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
 import { RestrainedMovement }   from "./restrained-movement.mjs";
@@ -745,6 +750,14 @@ Hooks.once("ready", () => {
     .catch(() => { /* guard optional, never fatal */ });
   try { DayRollover.init(); }
   catch (err) { console.error(`${MODULE_ID} | Day rollover init failed:`, err); }
+  // His note 39: an hour in extreme cold is a DC 10 Constitution save or a level
+  // of exhaustion. Counted off world time, rolled on the active GM's screen.
+  try { Exposure.register(); }
+  catch (err) { console.error(`${MODULE_ID} | the hourly cold check did not start:`, err); }
+  // Exhaustion written the sheet's way: a condition switched off or missing under
+  // a stored level is put right, and the sheet's switch off clears the level.
+  try { registerExhaustion(); }
+  catch (err) { console.error(`${MODULE_ID} | the exhaustion repair did not start:`, err); }
   try { HungerWarning.register(); }
   catch (err) { console.error(`${MODULE_ID} | Hunger warning init failed:`, err); }
   try { RestRaw.register(); }
@@ -1571,7 +1584,7 @@ Hooks.on("preCreateChatMessage", (message, data) => {
 
     // Optional: also flip the rollMode hint to "gmroll" so any downstream
     // module that inspects rollMode (instead of whisper) renders correctly.
-    if (!data.rollMode) data.rollMode = "gmroll";
+    if (!data.rollMode) data.rollMode = messageModeName("gm");
   } catch (err) {
     // Non-fatal — if anything throws, fall back to the default public roll
     console.warn(`${MODULE_ID} | Hidden NPC initiative hook failed:`, err);
@@ -3812,6 +3825,12 @@ Hooks.once("ready", () => {
   } catch (err) {
     console.error(`${MODULE_ID} | Death bursts and burning bodies init failed:`, err);
   }
+  // Spiritual Weapon: a weapon token that attacks as itself (spiritual-weapon.mjs).
+  try {
+    SpiritualWeapon.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Spiritual Weapon init failed:`, err);
+  }
 
   // Prismatic Wall — EVERY client: the caster's own screen asks who passes the
   // wall unharmed; the active GM's screen rolls for whoever comes near it or
@@ -6043,6 +6062,7 @@ Hooks.once("ready", () => {
       import("./reach-repair.mjs").then(m => m.repairWeaponReach(opts)),
     clock: TheClock,
     movement: MovementClock,
+    exposure: Exposure,
     harvest: (t) => ClockWiring.harvest(t ?? canvas.tokens?.controlled?.[0]?.document),
     VERSION: 1,
     MODULE_ID,
@@ -6389,33 +6409,8 @@ Hooks.once("ready", () => {
     });
   });
 
-  // ── Wire chevron toggle on our attack-result cards ──
-  // Click the chevron in the card header to expand/collapse the embedded
-  // item description + property tags.
-  // Both hooks + sweep — see chat-render-utils.
-  registerChatCardHandler((message, html) => {
-    if (message.flags?.[MODULE_ID]?.type !== "attackResult") return;
-    const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
-    if (!el) return;
-    const toggle = el.querySelector(".ace-qol-atk-info-toggle");
-    if (!toggle) return;
-
-    toggle.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      const card = toggle.closest(".ace-qol-attack-card");
-      const details = card?.querySelector(".ace-qol-atk-item-details");
-      if (!details) return;
-      const willShow = details.classList.contains("ace-qol-collapsed");
-      details.classList.toggle("ace-qol-collapsed", !willShow);
-      toggle.setAttribute("aria-expanded", String(willShow));
-      const icon = toggle.querySelector("i");
-      if (icon) {
-        icon.classList.toggle("fa-chevron-down", !willShow);
-        icon.classList.toggle("fa-chevron-up", willShow);
-      }
-    });
-  });
+  // The attack card's chevron and the item description it opened are gone (his
+  // rule, 2026-10-13: "The chevron beside ADV does nothing. Remove it.").
 
   // ──────────────────────────────────────────────────────────────────────────
   // V13 HOOK FIX (2026-06-24) — the three handlers ABOVE (status-card suppress,
@@ -6455,31 +6450,6 @@ Hooks.once("ready", () => {
   // + sweeps cards drawn before this registered. Without it a status card
   // that loaded before the handler stays visible forever. See chat-render-utils.
   registerChatCardHandler(_aceHideStatusCard, "status cards");
-
-  // (c) Wire the chevron toggle on OUR attack-result cards (was V12-only too, so
-  //     the item-description expand/collapse was silently dead in V13).
-  const _aceWireAttackChevron = (message, html) => {
-    try {
-      if (message?.flags?.[MODULE_ID]?.type !== "attackResult") return;
-      const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
-      const toggle = el?.querySelector?.(".ace-qol-atk-info-toggle");
-      if (!toggle || toggle.dataset.aceWired) return;
-      toggle.dataset.aceWired = "1";
-      toggle.addEventListener("click", (ev) => {
-        ev.preventDefault(); ev.stopPropagation();
-        const card = toggle.closest(".ace-qol-attack-card");
-        const details = card?.querySelector(".ace-qol-atk-item-details");
-        if (!details) return;
-        const willShow = details.classList.contains("ace-qol-collapsed");
-        details.classList.toggle("ace-qol-collapsed", !willShow);
-        toggle.setAttribute("aria-expanded", String(willShow));
-        const icon = toggle.querySelector("i");
-        if (icon) { icon.classList.toggle("fa-chevron-down", !willShow); icon.classList.toggle("fa-chevron-up", willShow); }
-      });
-    } catch (_) { /* non-fatal */ }
-  };
-  // + sweeps cards drawn before this registered — see chat-render-utils.
-  registerChatCardHandler(_aceWireAttackChevron, "attack cards");
 
   // ── ACE skin: strip the "Place Measured Template" row from the cast/use dialog ──
   // The gold styling lives in ace-qol-overrides.css; this removes the template

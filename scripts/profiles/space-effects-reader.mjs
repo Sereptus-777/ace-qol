@@ -26,6 +26,8 @@
 // ⚠️ AND A GAP IS REPORTED ONCE, NOT EVERY TURN. An aura that should be applying
 // and is not is worth saying. Saying it on every single roll would train the GM
 // to ignore it, which is how the boot report became furniture.
+import { regionTestPoint } from "../foundry-compat.mjs";
+
 const MODULE_ID = "ace-qol";
 
 /** Gaps already announced this session, so each is said once. */
@@ -109,7 +111,7 @@ export function readSpaceEffects(token, { announceGaps = true } = {}) {
            and the answer is false. false is not nullish, so the correct call
            behind the `??` was never reached and this profile reported NO region on
            any creature, ever. The document is asked directly now. */
-        inside = !!region.testPoint?.({
+        inside = regionTestPoint(region, {
           ...token.center,
           elevation: token.document?.elevation ?? 0,
         });

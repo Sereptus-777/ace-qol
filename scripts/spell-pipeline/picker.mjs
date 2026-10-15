@@ -20,6 +20,7 @@ import { MODULE_ID } from "../ace-qol.mjs";
 import { aceDistanceFt } from "../geometry-utils.mjs";
 import { Situation } from "../situation.mjs";
 import { faceOf } from "../face.mjs";
+import { notACreature } from "../road/picker-rule.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system —
@@ -125,6 +126,7 @@ export class UnifiedSpellPicker {
     for (const tok of placeables) {
       const actor = tok.actor;
       if (!actor) continue;
+      if (notACreature(actor, tok.document)) continue;   // a Spiritual Weapon is not a creature
       const isSelf = actor.id === casterActor.id;
       if (isSelf && !allowSelf) continue;
       if (tok.document?.hidden && !game.user.isGM) continue;

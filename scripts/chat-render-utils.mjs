@@ -22,6 +22,7 @@
 // FOR ANY ACE CHAT CARD. Registering the raw hooks reintroduces the hole.
 
 import { fillRendered, isParty } from "./road/table-view.mjs";
+import { onRenderChatMessage } from "./foundry-compat.mjs";
 
 const MODULE_ID = "ace-qol";
 
@@ -67,9 +68,8 @@ export function registerChatCardHandler(handler, label = "chat cards", { sweepAl
     // Read the generation, not `isNewerVersion(game.version, "13")` — that
     // comparison is FALSE on a hypothetical 13.0 and would silently drop us
     // back to the V12 name on the very version this is guarding.
-    const generation = game.release?.generation ?? parseInt(game.version) ?? 0;
-    if (generation >= 13) Hooks.on("renderChatMessageHTML", handler);
-    else Hooks.on("renderChatMessage", handler);
+    // The one helper picks the hook (foundry-compat.mjs, Foundry 13 and 14).
+    onRenderChatMessage(handler);
 
     sweepDrawnCards(handler, { label, sweepAll, namespace });
 }
@@ -414,6 +414,12 @@ export function stampAceCard(message, el) {
         if (!el?.setAttribute) return false;
         if (!isAceCard(message, el)) return false;
         el.setAttribute("data-ace-card", "1");
+        // ⚠️ ON BLACK NOW, SO IN THE DARK THEME (his rule, 2026-10-12: "The cream
+        // frame around the outside goes"). The card's margin is the skinned roll
+        // card's black with dnd5e's slate in it; anything the system draws inside
+        // reads its dark-theme colours, the way the skin above moves a roll card.
+        el.classList?.remove?.("theme-light");
+        el.classList?.add?.("themed", "theme-dark");
         return true;
     } catch (err) {
         console.warn(`${MODULE_ID} | could not stamp a card as ACE's, so it keeps Foundry's `
@@ -628,9 +634,9 @@ export function registerAceChrome() {
         revealOwnACs(el);
         revealOwnBonuses(el, message);
         revealGmHalf(el);
-        takeLogToNewCard(message, el);
+        dressACsAndDCs(el);
     }, "ACE card chrome", { sweepAll: true });
-    registerAceCardScroll();
+    registerChatScroll();
     registerScrollAtTheEnd();
     console.log(`${MODULE_ID} | ACE cards drop Foundry's speaker strip and keep the ⋮; a DC `
         + `shows for the GM, and for a player on a roll they are making. Rest, initiative `
@@ -638,419 +644,104 @@ export function registerAceChrome() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   A NEW ACE CARD TAKES THE LOG TO IT
+   EVERY CARD TAKES THE CHAT TO THE BOTTOM, EVERY TIME
 
-     His rule, 2026-09-30: *"A new ACE card must scroll the log to that card."*
+     His rule, 2026-10-12: *"Every card, every time. A message posted to chat
+     calls ui.chat.scrollBottom({ popout: true, waitImages: true }) after that
+     card is in the log. The next card calls it again. Not the first card of a
+     session, not ACE cards only, not once. Sidebar and popout both. Do not set
+     scrollTop. Do not walk the nine candidates. If the card is not in the log on
+     that frame, call it again when it is."*
 
-   ⚠️🔴 FOUNDRY ONLY SCROLLS FOR TWO PEOPLE. Its own handler is:
+   ⚠️🔴 THIS REPLACES EVERYTHING THAT WAS HERE. ACE cards only, a set of cards
+   "created in this session", every candidate pane measured and its scrollTop
+   set, the last message pulled into view: each of those was a rule of its day
+   (09-30, 10-01) and each was a way for some card to be left below the fold.
+   One call, Foundry's own, for every message on every screen that shows it.
 
-       if ( this.isAtBottom || (message.author.id === game.user.id) )
-         this.scrollBottom({ waitImages: true });
+   PROVEN FROM FOUNDRY V13 (ChatLog#scrollBottom): it puts the sidebar log's own
+   .chat-scroll at the bottom, after that log's pictures have loaded when asked
+   to wait for them, and with `popout: true` asks the popped-out chat to do the
+   same. Its own #postOne scrolls only when the log was already at the bottom or
+   the message is yours; this is the call for everyone else.
 
-   So the log follows a new message only when this screen was already parked at
-   the bottom, or when the message is YOURS. An ACE card is neither for the
-   people who most need to read it: ACE writes a card as the creature it is
-   about, so on the roller's screen the author is not them; and one glance back
-   up the log to check what a monster rolled leaves `isAtBottom` false for the
-   rest of the fight. The card he was waiting to be asked for lands off-screen
-   and nothing says so.
-
-   ⚠️ THE BOTTOM OF THE LOG, AND NOTHING CLEVERER (his rule, 2026-09-30: "Do not
-   scroll-to-card. Do not wait on images. Do not add padding. Bottom of the
-   log."). 0.67.0 waited on images and then measured the card, and waiting on
-   images means waiting for every picture in the WHOLE log, which arrives late
-   enough to read as not scrolling at all.
-
-   ⚠️ A CREATE, NOT A RENDER. An ACE card is written once and then updated in
-   place (the card door), and a redraw is not a new card: scrolling on every
-   update would drag the log away from whatever he was reading each time a save
-   result landed. So `createChatMessage` marks the card as new and the render
-   pass, which sees the element, is what scrolls.
-
-   ⚠️🔴 AND NEITHER HOOK IS "AFTER THE CARD IS IN THE DOM" (his correction,
-   2026-09-30: "Fix the hook so it runs after the card is in the DOM"). Foundry's
-   own order, in ChatLog##postOne, is:
-
-       const html = await this.constructor.renderMessage(message);   // the hook
-       log.append(html);                                             // the DOM
-
-   `renderChatMessageHTML` fires INSIDE renderMessage, so the element is still
-   detached, and `createChatMessage` is earlier still. Scrolling from either one
-   scrolls to the bottom of a log the new card is not in yet, which lands on the
-   card BEFORE it and looks exactly like not scrolling. A microtask is no better:
-   the append is the continuation of that `await`, so anything queued during the
-   hook runs first.
-
-   So the scroll waits on a CONDITION, not a delay: `el.isConnected`, checked once
-   a frame. One animation frame runs after every microtask, which is after the
-   append. Bounded, and it says so if the card never arrives.
+   ⚠️ AFTER THE APPEND. #postOne awaits the render (where every render hook
+   fires) and only then appends, so the card is not in the log during
+   createChatMessage or the render hook. The call is made on the next frame and
+   made again on the first frame the card is found in the log.
    ══════════════════════════════════════════════════════════════════════════ */
 
 let _scrollRegistered = false;
-/** Cards created in this session that have not yet had the log taken to them. */
-const _newCards = new Set();
 
-export function registerAceCardScroll() {
+/** A frame in a browser, a tick in a harness (the replay runs headless). */
+const _nextFrame = (fn) => (typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame(fn) : setTimeout(fn, 16));
+
+/** Is this message in the chat log, sidebar or popout? Never the notification strip. */
+function _inTheLog(id) {
+    const sel = `.chat-log [data-message-id="${id}"]`;
+    try {
+        return !!(ui.chat?.element?.querySelector?.(sel)
+            ?? ui.chat?.popout?.element?.querySelector?.(sel));
+    } catch (_) { return false; }
+}
+
+/**
+ * Every message posted to this screen's chat, ACE's or not, mine or not, takes
+ * the chat to the bottom once it is in the log.
+ */
+export function registerChatScroll() {
     if (_scrollRegistered) return;
     _scrollRegistered = true;
     Hooks.on("createChatMessage", (message) => {
         try {
-            if (!isAceCard(message)) return;
-            // Whispered past this screen: there is nothing here to scroll to.
-            if (message.visible === false) return;
-            _newCards.add(message.id);
+            // Whispered past this screen: it is never put in this log.
+            if (message?.visible === false) return;
+            scrollWhenInTheLog(message.id);
         } catch (err) {
-            console.warn(`${MODULE_ID} | could not mark a new ACE card for scrolling:`, err);
+            console.warn(`${MODULE_ID} | could not take the chat to a new card:`, err);
         }
     });
 }
 
 /**
- * Take the log to this card, if it is one created in this session.
- *
- * Called from the chrome pass, so it runs for every ACE card on every screen and
- * no module has to remember it. A swept or re-rendered card is not in the set,
- * so it never moves the log.
+ * Foundry's own scroll on the next frame, and again on the frame the card is in
+ * the log. Bounded, and it says so if the card never arrives.
  */
-export function takeLogToNewCard(message, el) {
-    try {
-        if (!message?.id || !_newCards.has(message.id)) return;
-        _newCards.delete(message.id);
-
-        // ⚠️ WAIT FOR THE CARD TO BE IN THE LOG FIRST. The render hook fires
-        // inside ChatMessage#renderHTML, which ChatLog##postOne awaits BEFORE it
-        // appends — so at this moment the card is still detached and the bottom
-        // of the log is not where it is going to be. `inTheLog` is the condition,
-        // checked once a frame, and the follower below then keeps the bar there
-        // while the rest of the cast is still writing.
-        let frames = 0;
-        const inTheLog = () => !!el?.closest?.("#chat-log, .chat-log");
-        const whenInTheDom = () => {
-            if (inTheLog()) { followTheLog(`a new ACE card (${message.id})`, el); return; }
-            if (++frames > 30) {
-                console.warn(`${MODULE_ID} | a new ACE card never reached the chat log, so the bar `
-                    + `was not moved (message ${message.id}).`);
-                return;
-            }
-            requestAnimationFrame(whenInTheDom);
-        };
-        requestAnimationFrame(whenInTheDom);
-    } catch (err) {
-        console.warn(`${MODULE_ID} | could not take the chat log to a new ACE card, so it may `
-            + `have landed off-screen:`, err);
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   EVERY PANE, ONE PASS, AT THE END
-
-   His table, 2026-10-01: *"The console said div.chat-scroll was at the bottom.
-   The bar did not move. That element is not the thumb he drags. The last thing
-   the pipeline does, after the card is in the log and the apply is finished, is
-   scroll... Do it once, at the end. Not before the card. Not on a timer that
-   lets go."*
-
-   ⚠️🔴 TWICE I PICKED AN ELEMENT AND REPORTED IT AT ITS MAXIMUM WHILE HIS BAR SAT
-   WHERE IT WAS. 0.75.0 took the first ancestor that scrolled, which was a wrapper
-   with ninety pixels of travel. 0.76.0 took the one with the most travel and
-   followed the log with observers until it went quiet, and div.chat-scroll read
-   at the bottom while the thumb did not move.
-
-   So this stops choosing, and stops holding. Every pane that could own a chat
-   scrollbar is driven by name, Foundry's own is asked for its, every ancestor of
-   the last card is driven too, and then the last message is brought into view —
-   which is the one move that does not depend on having picked the right box,
-   because the browser scrolls whatever has to move. The widest-travel pane is
-   named as the thumb in the log, so a wrong answer stays visible.
-
-   And it runs at the END: when the card is in the log, and again when ACE says an
-   apply has finished. Each call does the whole job, so the last to run is the one
-   that counts and nothing lets go of the bar afterwards.
-
-   ⚠️ NOTHING HERE WAITS ON AN IMAGE or pads anything. Scrolling the last message
-   into view is his own instruction of 2026-10-01 and supersedes the "no
-   scroll-to-card" of the day before.
-   ══════════════════════════════════════════════════════════════════════════ */
-
-/**
- * Every pane that could own a chat scrollbar, by every name the app has used for
- * one, plus whatever actually owns the visible thumb.
- *
- * ⚠️🔴 HIS RULE, 2026-10-01: "Set scrollTop = scrollHeight on every one of these
- * that exists: the sidebar chat, #chat-log, .chat-scroll, div.chat-scroll, the
- * popout, and the element that actually owns the visible thumb."
- *
- * Twice now I have found "the" scroller, reported it at its maximum, and left his
- * bar where it was. So this stops choosing. Every candidate is listed and every
- * one of them is driven, and the one with the most travel — which is the thumb he
- * can actually grab — is named as such in the log so a wrong answer is visible
- * rather than reported as a success.
- */
-/**
- * The last chat message on screen, however the log is built this generation.
- *
- * ⚠️ NOT "inside #chat-log". That is what blinded the scan: the messages were
- * found through `#chat-log [data-message-id]`, and if the log element is not
- * called that here, `last` was undefined, the ancestor walk never ran, and the
- * only candidates left were the named selectors.
- */
-function inTheNotifications(el) {
-    try { return !!el?.closest?.("#chat-notifications, .chat-notifications"); }
-    catch (_) { return false; }
-}
-
-/**
- * The REAL copy of a message, and the pane whose bar he drags.
- *
- * ⚠️🔴 HIS AUDIT, 2026-10-01, and he read it out of the DOM himself: "That node
- * is in a 733px ol.chat-log. Its div.chat-scroll is 1117/1117 and has no
- * overflowed class. The bar is the other one, div.chat-scroll.overflowed...
- * lastChatMessage() is returning the notification copy."
- *
- * Exactly right, and Foundry's own source says so twice over. `_toggleNotifications`
- * builds a SECOND `.chat-log` inside `#chat-notifications` holding copies of
- * recent messages — the same message id in two places — and `#setOverflowing`
- * toggles `.overflowed` on the real `.chat-scroll` when its content is taller
- * than it is. So the notification copy is indistinguishable by id and the real
- * pane announces itself by class. My scan walked the last `[data-message-id]`
- * anywhere in the document, which is the notification copy, measured its
- * container at 1117/1117, and reported that nothing scrolls.
- *
- * @param {string} id  the message id
- * @returns {{li: Element, box: Element|null, why: string, candidates: string[]}|null}
- */
-export function realLogCopyOf(id) {
-    if (!id) return null;
-    const all = [...document.querySelectorAll(`[data-message-id="${id}"]`)];
-    const seen = [];
-    let best = null;
-    for (const li of all) {
-        const box = li.closest?.(".chat-scroll") ?? null;
-        const notif = inTheNotifications(li);
-        const overflowed = !!box?.classList?.contains?.("overflowed");
-        const travel = box ? Math.max(0, box.scrollHeight - box.clientHeight) : 0;
-        seen.push(`${notif ? "notification copy" : "log copy"}`
-            + ` in ${box ? `${box.tagName.toLowerCase()}.${String(box.className).trim().split(/\s+/).join(".")}`
-                : "no .chat-scroll"}`
-            + ` ${box ? `${box.scrollHeight}/${box.clientHeight}` : ""}`
-            + `${overflowed ? " [overflowed]" : ""} travel=${travel}`);
-        if (notif) continue;                      // never the notification strip
-        // The one Foundry marked as overflowing is the bar; failing that, the
-        // one with travel; failing that, keep the first real log copy so there
-        // is always something to report.
-        const rank = (overflowed ? 2 : 0) + (travel > 1 ? 1 : 0);
-        if (!best || rank > best.rank) best = { li, box, rank, overflowed, travel };
-    }
-    if (!best) return null;
-    return {
-        li: best.li, box: best.box, candidates: seen,
-        why: best.overflowed ? ".chat-scroll.overflowed"
-            : best.travel > 1 ? "the real log copy, which has travel"
-            : "the real log copy, which does NOT scroll",
-    };
-}
-
-/**
- * The last message in the REAL log, never the notification strip.
- */
-function lastChatMessage() {
-    const all = [...document.querySelectorAll("li.chat-message[data-message-id], "
-        + "[data-message-id]")].filter(el => !inTheNotifications(el));
-    return all.length ? all[all.length - 1] : null;
-}
-
-/**
- * Measure every candidate pane, whether or not it turns out to scroll.
- *
- * ⚠️🔴 HIS RULE, 2026-10-01, after the scan reported "no chat pane has a
- * scrollbar" while the log was visibly cut off: "The scan is blind. Log every
- * candidate: tag, id, class, scrollHeight, clientHeight, overflow... If none
- * qualify, say so and name what you measured. Do not claim there was nothing to
- * move."
- *
- * He is right twice over. A scan that only reports what passed its own filter
- * cannot be debugged, and "nothing to move" was a conclusion about the chat drawn
- * from a list that may never have contained the chat at all. So this measures
- * first and decides second, and the measurements are the log.
- *
- * @returns {{el: Element, why: string, tag: string, id: string, cls: string,
- *            scrollHeight: number, clientHeight: number, overflow: string,
- *            travel: number, scrolls: boolean}[]}
- */
-function measureChatPanes() {
-    const seen = new Map();
-    const look = (el, why) => {
-        if (!el || !(el instanceof Element) || el === document.body) return;
-        if (seen.has(el)) {
-            if (!seen.get(el).why.includes(why)) seen.get(el).why += ` + ${why}`;
+export function scrollWhenInTheLog(id, why = "a new card") {
+    let frames = 0;
+    let called = false;
+    const look = () => {
+        const there = _inTheLog(id);
+        if (there || !called) scrollChatToEnd(`${why} (${id})${there ? "" : ", not in the log yet"}`);
+        called = true;
+        if (there) return;
+        if (++frames > 180) {
+            console.warn(`${MODULE_ID} | message ${id} never reached the chat log, so the chat was `
+                + `not taken to it.`);
             return;
         }
-        let overflow = "?";
-        try {
-            const cs = getComputedStyle(el);
-            overflow = `${cs.overflow}/${cs.overflowY}`;
-        } catch (_) { /* detached or cross-document */ }
-        const scrollHeight = Math.round(el.scrollHeight);
-        const clientHeight = Math.round(el.clientHeight);
-        seen.set(el, {
-            el, why,
-            tag: el.tagName.toLowerCase(),
-            id: el.id || "",
-            cls: String(el.className || "").trim(),
-            scrollHeight, clientHeight, overflow,
-            travel: Math.max(0, scrollHeight - clientHeight),
-            scrolls: scrollHeight > clientHeight + 1,
-        });
+        _nextFrame(look);
     };
-
-    // His list, by name, everywhere it exists.
-    // ⚠️ `.chat-scroll.overflowed` is listed in its own right: Foundry's
-    // `#setOverflowing` puts that class on the pane whose content is taller than
-    // it is, which is the one definition of "the bar he drags" the app itself
-    // provides. The notification strip is measured too, and named, so a copy
-    // found there is visible in the log instead of mistaken for the chat.
-    for (const sel of ["#chat", "#chat-log", ".chat-log", ".chat-scroll", ".chat-scroll.overflowed",
-        "#sidebar", "#sidebar #chat", "#chat-popout", ".chat-popout", ".chat-sidebar",
-        "section.chat", "#chat-notifications", ".chat-notifications"]) {
-        for (const el of document.querySelectorAll(sel)) look(el, sel);
-    }
-    // Whatever Foundry itself holds, sidebar and popout.
-    try { look(ui.chat?.element, "ui.chat.element"); } catch (_) {}
-    try { look(ui.chat?.element?.querySelector?.(".chat-scroll"), "ui.chat's .chat-scroll"); } catch (_) {}
-    try { look(ui.chat?.popout?.element, "popout element"); } catch (_) {}
-    try { look(ui.chat?.popout?.element?.querySelector?.(".chat-scroll"), "popout .chat-scroll"); } catch (_) {}
-    // And every parent of the last message, which is the only path that cannot
-    // miss the element actually holding the bar.
-    let box = lastChatMessage()?.parentElement ?? null;
-    let depth = 0;
-    while (box && box !== document.body && depth++ < 20) {
-        look(box, `parent ${depth} of the last message`);
-        box = box.parentElement;
-    }
-    return [...seen.values()];
+    _nextFrame(look);
 }
 
 /**
- * THE LAST THING: the last message into view, and every pane that scrolls put at
- * the bottom. Measured out loud, every time.
- *
- * ⚠️ ONCE, AT THE END (his rule). Called when the card is in the log and again
- * when ACE says an apply has finished, so the last one to run is the one that
- * counts and nothing lets go of the bar afterwards.
+ * The chat to the bottom: Foundry's own call, sidebar and popout, after the
+ * pictures. Every other ACE moment that ends with a card calls this too.
  */
 export function scrollChatToEnd(why) {
     try {
-        const panes = measureChatPanes();
-
-        // ⚠️ THE LAST MESSAGE FIRST, because it is the one move that does not
-        // depend on having identified the right box: the browser scrolls whatever
-        // ancestor has to move to put that element on screen.
-        const last = lastChatMessage();
-        try { last?.scrollIntoView?.({ block: "end", behavior: "instant" }); }
-        catch (_) { /* the panes below still get driven */ }
-
-        const scrollers = panes.filter(p => p.scrolls);
-        // Drive every one of them, then read each back.
-        for (const p of scrollers) p.el.scrollTop = p.el.scrollHeight;
-
-        const line = (p) => {
-            const top = Math.round(p.el.scrollTop);
-            const travel = Math.max(0, Math.round(p.el.scrollHeight - p.el.clientHeight));
-            const at = p.scrolls ? (top >= travel - 1 ? "AT MAX" : `SHORT by ${travel - top}`)
-                : "does not scroll";
-            return `${p.tag}${p.id ? `#${p.id}` : ""}${p.cls ? `.${p.cls.split(/\s+/).join(".")}` : ""}`
-                + ` [${p.why}] scrollHeight=${p.scrollHeight} clientHeight=${p.clientHeight}`
-                + ` overflow=${p.overflow} travel=${p.travel} → ${at}`;
-        };
-
-        console.log(`${MODULE_ID} | chat to the end (${why}) — ${panes.length} candidate(s) measured, `
-            + `${scrollers.length} scroll:\n  ${panes.map(line).join("\n  ")}`
-            + `\n  last message: ${last ? `${last.tagName.toLowerCase()}`
-                + `[data-message-id="${last.dataset?.messageId ?? "?"}"] brought into view`
-                : "NONE FOUND — nothing matched li.chat-message or [data-message-id]"}`);
-
-        if (!scrollers.length) {
-            // ⚠️ NOT "nothing to move". That was a claim about the chat; this is a
-            // report of what was measured and found wanting.
-            console.warn(`${MODULE_ID} | none of those ${panes.length} candidates has a scrollbar `
-                + `(scrollHeight greater than clientHeight). The measurements are above — if the log `
-                + `is cut off, the element holding it is not in that list and its name is what is `
-                + `needed next.`);
+        if (typeof ui.chat?.scrollBottom !== "function") {
+            console.warn(`${MODULE_ID} | the chat log has no scrollBottom here, so it was not moved (${why}).`);
             return;
         }
-        // The widest travel is the thumb he drags; say so when it is still short.
-        const thumb = scrollers.reduce((a, b) => (b.travel > a.travel ? b : a));
-        const top = Math.round(thumb.el.scrollTop);
-        const travel = Math.max(0, Math.round(thumb.el.scrollHeight - thumb.el.clientHeight));
-        if (top < travel - 1) {
-            console.warn(`${MODULE_ID} | the bar he drags (${thumb.tag}${thumb.id ? `#${thumb.id}` : ""}`
-                + `${thumb.cls ? `.${thumb.cls.split(/\s+/)[0]}` : ""}) is still ${travel - top}px SHORT `
-                + `of the bottom. Do not read the lines above as a success.`);
-        }
+        Promise.resolve(ui.chat.scrollBottom({ popout: true, waitImages: true }))
+            .catch(err => console.warn(`${MODULE_ID} | the chat did not go to the bottom (${why}):`, err));
+        console.debug(`${MODULE_ID} | chat to the bottom: ${why}`);
     } catch (err) {
-        console.warn(`${MODULE_ID} | could not take the chat to the end:`, err);
+        console.warn(`${MODULE_ID} | could not take the chat to the bottom (${why}):`, err);
     }
-}
-
-/**
- * Take the pane that holds THIS message to the bottom.
- *
- * ⚠️🔴 HIS RULE, 2026-10-01: "Find every li with the save message id. Keep the one
- * inside the div.chat-scroll that has the overflowed class... then set that
- * element's scrollTop to its scrollHeight. If you still measure 1117/1117, you
- * still have the notification copy. Say so."
- *
- * @param {string} id   the message whose pane to move
- * @param {string} why  for the log
- * @returns {boolean}   whether that pane ended at its bottom
- */
-export function takeTheRealLogToBottom(id, why) {
-    try {
-        const found = realLogCopyOf(id);
-        if (!found) {
-            console.warn(`${MODULE_ID} | ${why}: no copy of message ${id} is in the chat log at all `
-                + `(only the notification strip, or none).`);
-            return false;
-        }
-        const box = found.box;
-        if (!box) {
-            console.warn(`${MODULE_ID} | ${why}: the log copy of ${id} has no .chat-scroll above it. `
-                + `Candidates: ${found.candidates.join(" | ")}`);
-            return false;
-        }
-        const h = Math.round(box.scrollHeight);
-        const vis = Math.round(box.clientHeight);
-        const travel = Math.max(0, h - vis);
-        const name = `${box.tagName.toLowerCase()}.${String(box.className).trim().split(/\s+/).join(".")}`;
-        if (travel <= 1) {
-            // ⚠️ HIS OWN TEST FOR IT. A pane as tall as its content is not the bar.
-            console.warn(`${MODULE_ID} | ${why}: ${name} measures ${h}/${vis} — no travel, so this is `
-                + `NOT the bar he drags and is very likely still the notification copy. `
-                + `Candidates: ${found.candidates.join(" | ")}`);
-            return false;
-        }
-        box.scrollTop = box.scrollHeight;
-        const top = Math.round(box.scrollTop);
-        const down = top >= travel - 1;
-        console.log(`${MODULE_ID} | ${why}: ${name} (${found.why}) ${h}/${vis} travel=${travel} `
-            + `scrollTop=${top} → ${down ? "AT MAX" : `SHORT by ${travel - top}`}`);
-        if (!down) {
-            console.warn(`${MODULE_ID} | that bar is still ${travel - top}px short. Do not read the `
-                + `line above as a success.`);
-        }
-        return down;
-    } catch (err) {
-        console.warn(`${MODULE_ID} | could not take the log to message ${id}:`, err);
-        return false;
-    }
-}
-
-/**
- * Kept as the name the card path calls. One pass, here and at the end of the
- * apply.
- */
-export function followTheLog(why, _cardEl = null) {
-    scrollChatToEnd(why);
 }
 
 /**
@@ -1129,6 +820,64 @@ export function attackSentenceHtml(d20, results) {
     const tail = words.size === 1 ? ` and ${[...words][0]}` : "";
     return `<span class="ace-qol-atk-table-line ace-qol-table-only">Rolled ${article} `
         + `<span class="ace-qol-atk-d20-result">${face}</span>${tail}.</span>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   EVERY AC AND EVERY DC: "vs AC 17", "vs DC 16", IN ORANGE
+
+     His rule, 2026-10-13: *"Every AC and every DC, on every card, is bright
+     orange, more orange than yellow. Not blue. A small 'vs' sits in front of it:
+     vs AC 17, vs DC 16. The 'vs' is smaller than the number."*
+
+   Every card already marks its AC and DC with one of three wrappers (.ace-qol-ac,
+   .ace-qol-dc, .ace-qol-save-dc), which is how each screen is shown only the
+   numbers it may see. The words inside them had drifted card by card: "DC 13",
+   "vs DC 13", "(DC 13)", "· DC 17 Constitution", "AC 19 +2". This pass, in the
+   chrome every ACE card goes through on every screen, says each one the same
+   way: a small "vs", then the number. What follows the number stays ("vs DC 17
+   Constitution", "vs AC 19 +2").
+
+   ⚠️ ONLY WHAT A CARD MARKED. A DC written into a sentence ("makes a DC 10
+   Constitution save") is not wrapped and is not touched: "makes a vs DC 10" is
+   not English.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const _AC_DC = /(?:\bvs\.?\s*)?\b(AC|DC)\s*(\d+)/i;
+export function dressACsAndDCs(root) {
+    let dressed = 0;
+    try {
+        for (const el of (root?.querySelectorAll?.(".ace-qol-ac, .ace-qol-dc, .ace-qol-save-dc") ?? [])) {
+            if (el.dataset.aceVs === "1") continue;
+            // A wrapper holding another: the inner one carries the number.
+            if (el.querySelector(".ace-qol-ac, .ace-qol-dc, .ace-qol-save-dc")) continue;
+            const text = el.textContent ?? "";
+            const m = text.match(_AC_DC);
+            if (!m) continue;
+            const before = text.slice(0, m.index).replace(/[\s·(]+$/, "");
+            const after = text.slice(m.index + m[0].length).replace(/^\s*\)/, "");
+            // A marked DC inside a sentence ("must make a DC 15 Wisdom save") keeps
+            // its orange and takes no "vs": "make a vs DC 15" is not English.
+            const lead = `${el.previousSibling?.textContent ?? ""}${before}`;
+            const inSentence = /\b(a|an|the)\s*$/i.test(lead);
+            const vs = document.createElement("span");
+            vs.className = "ace-qol-vs";
+            vs.textContent = "vs";
+            const num = document.createElement("span");
+            num.className = "ace-qol-num";
+            num.textContent = `${m[1].toUpperCase()} ${m[2]}`;
+            el.textContent = "";
+            if (before.trim()) el.append(`${before} `);
+            else if (/^\s/.test(text)) el.append(" ");     // the space the wrapper carried in
+            if (inSentence) el.append(num);
+            else el.append(vs, " ", num);
+            if (after.trim()) el.append(after.replace(/[\s.]+$/, (t) => (t.includes(".") ? "." : "")));
+            else if (/\s$/.test(text)) el.append(" ");      // the space the wrapper carried out
+            el.dataset.aceVs = "1";
+            dressed++;
+        }
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not dress the ACs and DCs on a card; they read as written:`, err);
+    }
+    return dressed;
 }
 
 /** The wrapper every card puts an AC in. `whose` is the creature it belongs to. */

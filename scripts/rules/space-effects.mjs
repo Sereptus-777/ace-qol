@@ -30,6 +30,7 @@
 // SPHERE surfaces the moment it happens.
 // ──────────────────────────────────────────────────────────────────────────────
 
+import { regionTestPoint } from "../foundry-compat.mjs";
 import { MODULE_ID } from "../ace-qol.mjs";
 import { onCanvasReady } from "../ready-utils.mjs";
 import { QolSettings } from "../settings.mjs";
@@ -369,7 +370,7 @@ export class SpaceEffects {
         const centre = { x: pos.x + ((Number(d.width) || 1) * g) / 2,
                          y: pos.y + ((Number(d.height) || 1) * g) / 2 };
         let inside = false;
-        try { inside = region.testPoint?.({ ...centre, elevation: pos.elevation }) ?? false; }
+        try { inside = regionTestPoint(region, { ...centre, elevation: pos.elevation }); }
         catch (_) { inside = false; }
         if (!inside) continue;
         lowest = (lowest === null) ? pos.elevation : Math.min(lowest, pos.elevation);
@@ -1001,11 +1002,9 @@ export class SpaceEffects {
         const space = region.getFlag?.(MODULE_ID, "space");
         if (!space) continue;
         let inside = false;
-        try {
-          inside = region.testPoint?.({ x: point.x, y: point.y, elevation }) ?? false;
-        } catch (_) {
-          try { inside = region.object?.testPoint?.({ x: point.x, y: point.y }, elevation) ?? false; } catch (_) {}
-        }
+        // The document first, the placeable as the fallback: foundry-compat.mjs.
+        try { inside = regionTestPoint(region, { x: point.x, y: point.y, elevation }); }
+        catch (_) { inside = false; }
         if (inside) out.push({ region, space });
       }
     } catch (err) {
@@ -1038,7 +1037,7 @@ export class SpaceEffects {
       const space = region.getFlag?.(MODULE_ID, "space");
       if (!space) continue;
       let inside = false;
-      try { inside = region.testPoint?.({ ...centre, elevation: Number(doc.elevation ?? 0) }) ?? false; }
+      try { inside = regionTestPoint(region, { ...centre, elevation: Number(doc.elevation ?? 0) }); }
       catch (_) { /* reported as not inside, and the distance below still tells him why */ }
       const g = SpaceEffects._spaceFxGeometry(region);
       const away = g ? Math.round(Math.hypot(centre.x - g.x, centre.y - g.y) / perFt) : null;

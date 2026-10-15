@@ -61,21 +61,17 @@ export function holdForDice(message, li) {
   li.classList?.add?.(HELD);
   hold.then(() => {
     li.classList?.remove?.(HELD);
-    /* ⚠️🔴 AND THIS IS WHERE A SAVE CARD REACHES THE BOTTOM (his audit,
-       2026-10-01: "After the held class is removed, wait two frames, then set
-       that element's scrollTop to its scrollHeight.").
+    /* ⚠️🔴 AND THIS IS WHERE A HELD CARD REACHES THE BOTTOM. This is the moment
+       the card stops being invisible, and only this file knows it: a save card is
+       held here until the dice land, so the scroll made when it was posted ran
+       over a card still at `display: none`.
 
-       This is the moment the card stops being invisible, and it is a moment only
-       this file knows about: a save card is held here until the dice land, which
-       is why attacks stick and saves did not. Every scroll elsewhere was
-       measuring a card that was still hidden, and the old line here asked
-       `ui.chat.scrollBottom` and only when the log happened to be at the bottom
-       already — both of which have been proved not to move his bar.
-
-       Two frames, because the card has just come back from `display: none` and
-       the pane's scrollHeight is not final until the browser has laid it out
-       again. Then the pane that actually holds this message, found by class
-       rather than by document order. */
+       Two frames, because it has just come back from `display: none` and the
+       log's height is not final until the browser has laid it out again. Then
+       Foundry's own scroll, sidebar and popout (his rule, 2026-10-12: "Every
+       card, every time... ui.chat.scrollBottom({ popout: true, waitImages: true
+       })... Do not set scrollTop."). It replaces the 10-01 scrollTop write on
+       this message's own pane. */
     // ⚠️ A FRAME IN A BROWSER, A TICK IN A HARNESS. The replay drives this file
     // headless, where `requestAnimationFrame` does not exist — it threw on the
     // first run and took the whole replay with it. Two of whichever this
@@ -84,8 +80,8 @@ export function holdForDice(message, li) {
       ? requestAnimationFrame(fn) : setTimeout(fn, 0));
     _next(() => _next(() => {
       import("./chat-render-utils.mjs")
-        .then(({ takeTheRealLogToBottom }) =>
-          takeTheRealLogToBottom(id, "the card is no longer held for this screen's dice"))
+        .then(({ scrollChatToEnd }) =>
+          scrollChatToEnd(`the card is no longer held for this screen's dice (${id})`))
         .catch(err => console.warn(`${LOG} | the card is shown but the log was not moved:`, err));
     }));
   });

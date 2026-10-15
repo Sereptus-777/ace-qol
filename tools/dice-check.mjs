@@ -96,9 +96,9 @@ const ROLL_METHODS = new Set([
   "rollToolCheck", "rollDeathSave", "rollHitDie", "rollConcentration", "rollInitiative",
   "rollAttack", "rollDamage", "rollFormula", "rollRecharge",
 ]);
-// ACE QOL's two waits, and Forge's own (Forge runs without ACE QOL, so it
-// carries its copy in scripts/dice-wait.mjs).
-const WAIT_NAMES = new Set(["awaitDiceSettle", "awaitDsnRoll", "forgeAwaitDice", "untilDiceLand"]);
+// ACE QOL's two waits, and Forge's and Engine's own (each runs without ACE QOL,
+// so each carries its copy in its scripts/dice-wait.mjs).
+const WAIT_NAMES = new Set(["awaitDiceSettle", "awaitDsnRoll", "forgeAwaitDice", "engineAwaitDice", "untilDiceLand"]);
 const SHOW_NAMES = new Set(["safeShowForRoll", "showForRoll"]);
 
 const unchain = (n) => (n && n.type === "ChainExpression") ? n.expression : n;

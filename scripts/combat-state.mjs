@@ -446,13 +446,12 @@ export class CombatState {
     const tgtTraits = tgtSys.traits ?? {};
     const tgtAttrs = tgtSys.attributes ?? {};
     const tgtDetails = tgtSys.details ?? {};
-    const tgtConditions = new Set();
+    const tgtConditions = CombatState._conditionsFrom(tgtStatuses);
 
     // ── Target Conditions → Attack Modifiers ─────────────────────────────
 
     // PRONE
     if (tgtStatuses.has("prone")) {
-      tgtConditions.add("prone");
       if (isMelee) {
         advantageSources.push({ source: "target", reason: "Target is PRONE → melee attack advantage" });
       } else {
@@ -462,31 +461,26 @@ export class CombatState {
 
     // RESTRAINED
     if (tgtStatuses.has("restrained")) {
-      tgtConditions.add("restrained");
       advantageSources.push({ source: "target", reason: "Target is RESTRAINED → attack advantage" });
     }
 
     // PARALYZED
     if (tgtStatuses.has("paralyzed")) {
-      tgtConditions.add("paralyzed");
       advantageSources.push({ source: "target", reason: "Target is PARALYZED → attack advantage" });
     }
 
     // STUNNED
     if (tgtStatuses.has("stunned")) {
-      tgtConditions.add("stunned");
       advantageSources.push({ source: "target", reason: "Target is STUNNED → attack advantage" });
     }
 
     // UNCONSCIOUS
     if (tgtStatuses.has("unconscious")) {
-      tgtConditions.add("unconscious");
       advantageSources.push({ source: "target", reason: "Target is UNCONSCIOUS → attack advantage" });
     }
 
     // BLINDED
     if (tgtStatuses.has("blinded") || tgtStatuses.has("blind")) {
-      tgtConditions.add("blinded");
       advantageSources.push({ source: "target", reason: "Target is BLINDED → attack advantage" });
     }
 
@@ -494,7 +488,6 @@ export class CombatState {
     // attacker CAN see it (Truesight / See Invisibility / Blindsight / Tremorsense).
     // The senses engine decides; this is the See-Invisibility gap Johnny hit.
     if (tgtStatuses.has("invisible")) {
-      tgtConditions.add("invisible");
       const attackerSees = Situation.canSee(attackerActor, targetActor, {
         viewerToken: attackerToken, subjectToken: targetToken, distanceFt: distanceToTarget,
       });
@@ -507,23 +500,16 @@ export class CombatState {
 
     // PETRIFIED
     if (tgtStatuses.has("petrified")) {
-      tgtConditions.add("petrified");
       advantageSources.push({ source: "target", reason: "Target is PETRIFIED → attack advantage" });
     }
 
     // DODGING
     if (tgtStatuses.has("dodging") || tgtStatuses.has("dodge")) {
-      tgtConditions.add("dodging");
       disadvantageSources.push({ source: "target", reason: "Target is DODGING → attack disadvantage" });
     }
 
-    // POISONED, FRIGHTENED, CHARMED, GRAPPLED, INCAPACITATED, DEAFENED
-    if (tgtStatuses.has("poisoned")) tgtConditions.add("poisoned");
-    if (tgtStatuses.has("frightened")) tgtConditions.add("frightened");
-    if (tgtStatuses.has("charmed")) tgtConditions.add("charmed");
-    if (tgtStatuses.has("grappled")) tgtConditions.add("grappled");
-    if (tgtStatuses.has("incapacitated")) tgtConditions.add("incapacitated");
-    if (tgtStatuses.has("deafened") || tgtStatuses.has("deaf")) tgtConditions.add("deafened");
+    // POISONED, FRIGHTENED, CHARMED, GRAPPLED, INCAPACITATED and DEAFENED change
+    // no attack roll here; they are in tgtConditions for the rules that read them.
 
     // ── Ranged Attack Within 5 feet of Hostile ─────────────────────────────
     //
@@ -808,171 +794,13 @@ export class CombatState {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    //  SAVING THROW MODIFIERS ON TARGET
+    //  SAVING THROW MODIFIERS ON TARGET: one question, CombatState.saveSituation,
+    //  asked here and by anything that has a save but no attacker (the hour of
+    //  extreme cold or heat, 2026-10-13).
     // ═════════════════════════════════════════════════════════════════════════
-    let saveAdvantage = false;
-    let saveDisadvantage = false;
-    let autoFailSave = false;
-    const saveBonuses = [];
-    const saveAdvReasons = [];
-    const saveDisadvReasons = [];
-
-    if (saveAbility) {
-      // Auto-fail STR/DEX saves (several offered, "str/dex": only when every one would)
-      if (String(saveAbility).split("/").every(k => ["str", "dex"].includes(k))) {
-        if (tgtConditions.has("paralyzed") || tgtConditions.has("stunned")
-         || tgtConditions.has("unconscious") || tgtConditions.has("petrified")) {
-          autoFailSave = true;
-        }
-      }
-
-      // Restrained → disadvantage on DEX saves
-      if (tgtConditions.has("restrained") && saveAbility === "dex") {
-        saveDisadvantage = true;
-        saveDisadvReasons.push("RESTRAINED → DEX save disadvantage");
-      }
-
-      // Exhaustion 3+ → disadvantage on ALL saves (2014 only)
-      // 2024 RAW collapses exhaustion to a flat -N penalty per level handled
-      // natively by the dnd5e system; ACE QOL must not double-stack.
-      const tgtExhaustion = tgtSys.attributes?.exhaustion ?? 0;
-      if (tgtExhaustion >= 3 && CombatState.getActiveEdition(targetActor) === "2014") {
-        saveDisadvantage = true;
-        saveDisadvReasons.push(`EXHAUSTION ${tgtExhaustion} (2014 L3+) → save disadvantage`);
-      }
-
-      // Dodge → advantage on DEX saves
-      if (saveAbility === "dex" && tgtConditions.has("dodging")) {
-        saveAdvantage = true;
-        saveAdvReasons.push("DODGING → DEX save advantage");
-      }
-
-      // Magic Resistance → advantage on saves vs spells
-      const magicRes = FlagsEngine.hasMagicResistance(targetActor)
-                    || ExtendedEffects.hasMagicResistance(targetActor)
-                    || CombatState._hasFeature(targetActor, "Magic Resistance");
-      if (magicRes && isSpell) {
-        saveAdvantage = true;
-        saveAdvReasons.push("MAGIC RESISTANCE → advantage on saves vs spells");
-      }
-
-      // Gnome Cunning → advantage on INT/WIS/CHA saves vs magic
-      if (["int", "wis", "cha"].includes(saveAbility) && isSpell) {
-        if (CombatState._hasFeature(targetActor, "Gnome Cunning")) {
-          saveAdvantage = true;
-          saveAdvReasons.push("GNOME CUNNING → advantage on INT/WIS/CHA saves vs magic");
-        }
-      }
-
-      // Danger Sense (Barbarian) → advantage on DEX saves you can see
-      if (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Danger Sense")) {
-        if (!tgtConditions.has("blinded") && !tgtConditions.has("deafened") && !tgtConditions.has("incapacitated")) {
-          saveAdvantage = true;
-          saveAdvReasons.push("DANGER SENSE → DEX save advantage");
-        }
-      }
-
-      // Haste → advantage on DEX saves
-      if (saveAbility === "dex" && CombatState._hasEffect(targetActor, "Haste")) {
-        saveAdvantage = true;
-        saveAdvReasons.push("HASTE → DEX save advantage");
-      }
-
-      // Foresight → advantage on ALL saves
-      if (CombatState._hasEffect(targetActor, "Foresight")) {
-        saveAdvantage = true;
-        saveAdvReasons.push("FORESIGHT → advantage on all saves");
-      }
-
-      // Holy Aura → advantage on ALL saves
-      if (CombatState._hasEffect(targetActor, "Holy Aura")) {
-        saveAdvantage = true;
-        saveAdvReasons.push("HOLY AURA → advantage on all saves");
-      }
-
-      // Beacon of Hope → advantage on WIS saves
-      if (saveAbility === "wis" && CombatState._hasEffect(targetActor, "Beacon of Hope")) {
-        saveAdvantage = true;
-        saveAdvReasons.push("BEACON OF HOPE → WIS save advantage");
-      }
-
-      // ACE QOL flags (FlagsEngine checks ace-qol + midi-qol automatically)
-      if (FlagsEngine.hasSaveAdvantage(targetActor, saveAbility)
-       || ExtendedEffects.hasAdvantage(targetActor, "save", saveAbility)
-       || ExtendedEffects.hasAdvantage(targetActor, "save", "all")) {
-        saveAdvantage = true;
-        saveAdvReasons.push("Effect grants save advantage");
-      }
-      if (FlagsEngine.hasSaveDisadvantage(targetActor, saveAbility)
-       || ExtendedEffects.hasDisadvantage(targetActor, "save", saveAbility)
-       || ExtendedEffects.hasDisadvantage(targetActor, "save", "all")) {
-        saveDisadvantage = true;
-        saveDisadvReasons.push("Effect grants save disadvantage");
-      }
-
-      // Auto-fail saves from flags
-      if (FlagsEngine.autoFailsSave(targetActor, saveAbility)) {
-        autoFailSave = true;
-      }
-
-      // ── Save bonuses from active effects (Bless, Bardic Inspiration,
-      //    Heroes' Feast, Resistance cantrip, custom buffs) ──
-      // Scan the actor's active effects for any change modifying:
-      //   • system.bonuses.abilities.save        (all-save bonus, like Bless)
-      //   • system.abilities.<ability>.bonuses.save  (per-ability bonus)
-      // Use the effect's NAME as the label so players see exactly which buff
-      // is contributing. This replaces the old hardcoded "Bless" label which
-      // mis-attributed Bardic Inspiration / Heroism / etc.
-      const collectedFromEffects = new Set(); // dedup by (key,value)
-      for (const eff of (targetActor.effects?.contents ?? [])) {
-        if (eff.disabled) continue;
-        const effName = eff.name || "Active Effect";
-        for (const ch of (eff.changes ?? [])) {
-          if (!ch.value) continue;
-          const k = String(ch.key ?? "");
-          const isAllSave = k === "system.bonuses.abilities.save";
-          const isThisSave = k === `system.abilities.${saveAbility}.bonuses.save`;
-          if (!isAllSave && !isThisSave) continue;
-          const dedupeKey = `${k}::${ch.value}::${effName}`;
-          if (collectedFromEffects.has(dedupeKey)) continue;
-          collectedFromEffects.add(dedupeKey);
-          saveBonuses.push({
-            value: String(ch.value).startsWith("+") || String(ch.value).startsWith("-")
-              ? ch.value : `+${ch.value}`,
-            label: effName,
-          });
-        }
-      }
-
-      // Fallback: bonuses applied directly to the actor's system data (some
-      // legacy modules/sheets stash bonuses there without a discoverable
-      // active effect). Only surface if not already captured above.
-      const blessBonus = tgtSys.bonuses?.abilities?.save;
-      if (blessBonus && ![...collectedFromEffects].some(k => k.endsWith(`::${blessBonus}::Bless`))) {
-        // Try to identify the source — if there's an effect literally named
-        // "Bless" we already grabbed it. Otherwise label it as "Save bonus".
-        const blessEff = (targetActor.effects?.contents ?? []).find(e =>
-          /^bless$/i.test(e.name ?? "") && !e.disabled);
-        if (!blessEff) {
-          saveBonuses.push({ value: blessBonus, label: "Save bonus" });
-        }
-      }
-      const abilitySaveBonus = tgtSys.abilities?.[saveAbility]?.bonuses?.save;
-      if (abilitySaveBonus && !collectedFromEffects.size) {
-        saveBonuses.push({ value: abilitySaveBonus, label: `${saveAbility.toUpperCase()} bonus` });
-      }
-
-      // Aura of Protection (Paladin) — CHA mod to saves for nearby allies
-      // (or self per RAW). Check all friendly tokens for a paladin source.
-      const auraBonus = CombatState._getAuraOfProtectionBonus(targetToken);
-      if (auraBonus > 0) saveBonuses.push({ value: `+${auraBonus}`, label: "Aura of Protection" });
-    }
-
-    // ── Evasion / Shield Master ─────────────────────────────────────────
-    const superSaver = CombatState.evasionFor(targetActor, saveAbility);
-    const semiSuperSaver = FlagsEngine._checkFlag(targetActor, `semiSuperSaver.${saveAbility}`)
-                        || ExtendedEffects.hasSemiSuperSaver(targetActor, saveAbility)
-                        || (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Shield Master"));
+    const { saveAdvantage, saveDisadvantage, autoFailSave, saveBonuses, saveAdvReasons,
+            saveDisadvReasons, superSaver, semiSuperSaver } = CombatState.saveSituation(targetActor,
+      targetToken, { saveAbility, isSpell, conditions: tgtConditions });
 
     // ═════════════════════════════════════════════════════════════════════════
     //  CREATURE TYPE + SLAYER
@@ -1569,6 +1397,216 @@ export class CombatState {
   //  Summary Tags for Chat Card
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * A creature's side of a saving throw, on its own: advantage and disadvantage
+   * and why, an automatic failure, the bonuses it adds (Bless, Aura of
+   * Protection), and Evasion.
+   *
+   * ⚠️ ONE READER FOR BOTH. This was a section inside `assess`, which refuses to
+   * run without an attacker, so a save with no attacker (an hour of extreme
+   * cold) had no way onto the road and rolled a plain dnd5e save beside it (his
+   * finding, 2026-10-13: "The hour check left the road"). `assess` asks this now,
+   * with the conditions it has already read, and so does everything else.
+   *
+   * @param {Actor} targetActor
+   * @param {Token|null} targetToken
+   * @param {object} o
+   * @param {string|null} o.saveAbility   "dex", or several offered ("str/dex")
+   * @param {boolean} [o.isSpell]
+   * @param {Set<string>} [o.conditions]  already read; read from the token when absent
+   */
+  static saveSituation(targetActor, targetToken, { saveAbility = null, isSpell = false, conditions = null } = {}) {
+    const tgtSys = targetActor?.system ?? {};
+    const tgtConditions = conditions
+      ?? CombatState._conditionsFrom(CombatState._getStatuses(targetActor, targetToken));
+    let saveAdvantage = false;
+    let saveDisadvantage = false;
+    let autoFailSave = false;
+    const saveBonuses = [];
+    const saveAdvReasons = [];
+    const saveDisadvReasons = [];
+
+    if (saveAbility) {
+      // Auto-fail STR/DEX saves (several offered, "str/dex": only when every one would)
+      if (String(saveAbility).split("/").every(k => ["str", "dex"].includes(k))) {
+        if (tgtConditions.has("paralyzed") || tgtConditions.has("stunned")
+         || tgtConditions.has("unconscious") || tgtConditions.has("petrified")) {
+          autoFailSave = true;
+        }
+      }
+
+      // Restrained → disadvantage on DEX saves
+      if (tgtConditions.has("restrained") && saveAbility === "dex") {
+        saveDisadvantage = true;
+        saveDisadvReasons.push("RESTRAINED → DEX save disadvantage");
+      }
+
+      // Exhaustion 3+ → disadvantage on ALL saves (2014 only)
+      // 2024 RAW collapses exhaustion to a flat -N penalty per level handled
+      // natively by the dnd5e system; ACE QOL must not double-stack.
+      const tgtExhaustion = tgtSys.attributes?.exhaustion ?? 0;
+      if (tgtExhaustion >= 3 && CombatState.getActiveEdition(targetActor) === "2014") {
+        saveDisadvantage = true;
+        saveDisadvReasons.push(`EXHAUSTION ${tgtExhaustion} (2014 L3+) → save disadvantage`);
+      }
+
+      // Dodge → advantage on DEX saves
+      if (saveAbility === "dex" && tgtConditions.has("dodging")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("DODGING → DEX save advantage");
+      }
+
+      // Magic Resistance → advantage on saves vs spells
+      const magicRes = FlagsEngine.hasMagicResistance(targetActor)
+                    || ExtendedEffects.hasMagicResistance(targetActor)
+                    || CombatState._hasFeature(targetActor, "Magic Resistance");
+      if (magicRes && isSpell) {
+        saveAdvantage = true;
+        saveAdvReasons.push("MAGIC RESISTANCE → advantage on saves vs spells");
+      }
+
+      // Gnome Cunning → advantage on INT/WIS/CHA saves vs magic
+      if (["int", "wis", "cha"].includes(saveAbility) && isSpell) {
+        if (CombatState._hasFeature(targetActor, "Gnome Cunning")) {
+          saveAdvantage = true;
+          saveAdvReasons.push("GNOME CUNNING → advantage on INT/WIS/CHA saves vs magic");
+        }
+      }
+
+      // Danger Sense (Barbarian) → advantage on DEX saves you can see
+      if (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Danger Sense")) {
+        if (!tgtConditions.has("blinded") && !tgtConditions.has("deafened") && !tgtConditions.has("incapacitated")) {
+          saveAdvantage = true;
+          saveAdvReasons.push("DANGER SENSE → DEX save advantage");
+        }
+      }
+
+      // Haste → advantage on DEX saves
+      if (saveAbility === "dex" && CombatState._hasEffect(targetActor, "Haste")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("HASTE → DEX save advantage");
+      }
+
+      // Foresight → advantage on ALL saves
+      if (CombatState._hasEffect(targetActor, "Foresight")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("FORESIGHT → advantage on all saves");
+      }
+
+      // Holy Aura → advantage on ALL saves
+      if (CombatState._hasEffect(targetActor, "Holy Aura")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("HOLY AURA → advantage on all saves");
+      }
+
+      // Beacon of Hope → advantage on WIS saves
+      if (saveAbility === "wis" && CombatState._hasEffect(targetActor, "Beacon of Hope")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("BEACON OF HOPE → WIS save advantage");
+      }
+
+      // ACE QOL flags (FlagsEngine checks ace-qol + midi-qol automatically)
+      if (FlagsEngine.hasSaveAdvantage(targetActor, saveAbility)
+       || ExtendedEffects.hasAdvantage(targetActor, "save", saveAbility)
+       || ExtendedEffects.hasAdvantage(targetActor, "save", "all")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("Effect grants save advantage");
+      }
+      if (FlagsEngine.hasSaveDisadvantage(targetActor, saveAbility)
+       || ExtendedEffects.hasDisadvantage(targetActor, "save", saveAbility)
+       || ExtendedEffects.hasDisadvantage(targetActor, "save", "all")) {
+        saveDisadvantage = true;
+        saveDisadvReasons.push("Effect grants save disadvantage");
+      }
+
+      // Auto-fail saves from flags
+      if (FlagsEngine.autoFailsSave(targetActor, saveAbility)) {
+        autoFailSave = true;
+      }
+
+      // ── Save bonuses from active effects (Bless, Bardic Inspiration,
+      //    Heroes' Feast, Resistance cantrip, custom buffs) ──
+      // Scan the actor's active effects for any change modifying:
+      //   • system.bonuses.abilities.save        (all-save bonus, like Bless)
+      //   • system.abilities.<ability>.bonuses.save  (per-ability bonus)
+      // Use the effect's NAME as the label so players see exactly which buff
+      // is contributing. This replaces the old hardcoded "Bless" label which
+      // mis-attributed Bardic Inspiration / Heroism / etc.
+      const collectedFromEffects = new Set(); // dedup by (key,value)
+      for (const eff of (targetActor.effects?.contents ?? [])) {
+        if (eff.disabled) continue;
+        const effName = eff.name || "Active Effect";
+        for (const ch of (eff.changes ?? [])) {
+          if (!ch.value) continue;
+          const k = String(ch.key ?? "");
+          const isAllSave = k === "system.bonuses.abilities.save";
+          const isThisSave = k === `system.abilities.${saveAbility}.bonuses.save`;
+          if (!isAllSave && !isThisSave) continue;
+          const dedupeKey = `${k}::${ch.value}::${effName}`;
+          if (collectedFromEffects.has(dedupeKey)) continue;
+          collectedFromEffects.add(dedupeKey);
+          saveBonuses.push({
+            value: String(ch.value).startsWith("+") || String(ch.value).startsWith("-")
+              ? ch.value : `+${ch.value}`,
+            label: effName,
+          });
+        }
+      }
+
+      // Fallback: bonuses applied directly to the actor's system data (some
+      // legacy modules/sheets stash bonuses there without a discoverable
+      // active effect). Only surface if not already captured above.
+      const blessBonus = tgtSys.bonuses?.abilities?.save;
+      if (blessBonus && ![...collectedFromEffects].some(k => k.endsWith(`::${blessBonus}::Bless`))) {
+        // Try to identify the source — if there's an effect literally named
+        // "Bless" we already grabbed it. Otherwise label it as "Save bonus".
+        const blessEff = (targetActor.effects?.contents ?? []).find(e =>
+          /^bless$/i.test(e.name ?? "") && !e.disabled);
+        if (!blessEff) {
+          saveBonuses.push({ value: blessBonus, label: "Save bonus" });
+        }
+      }
+      const abilitySaveBonus = tgtSys.abilities?.[saveAbility]?.bonuses?.save;
+      if (abilitySaveBonus && !collectedFromEffects.size) {
+        saveBonuses.push({ value: abilitySaveBonus, label: `${saveAbility.toUpperCase()} bonus` });
+      }
+
+      // Aura of Protection (Paladin) — CHA mod to saves for nearby allies
+      // (or self per RAW). Check all friendly tokens for a paladin source.
+      // A creature with no token drawn on this canvas (an hour on a scene the GM
+      // is not looking at) has no aura to stand in that can be measured here.
+      const auraBonus = targetToken ? CombatState._getAuraOfProtectionBonus(targetToken) : 0;
+      if (auraBonus > 0) saveBonuses.push({ value: `+${auraBonus}`, label: "Aura of Protection" });
+    }
+
+    // ── Evasion / Shield Master ─────────────────────────────────────────
+    const superSaver = CombatState.evasionFor(targetActor, saveAbility);
+    const semiSuperSaver = FlagsEngine._checkFlag(targetActor, `semiSuperSaver.${saveAbility}`)
+                        || ExtendedEffects.hasSemiSuperSaver(targetActor, saveAbility)
+                        || (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Shield Master"));
+
+    return { saveAdvantage, saveDisadvantage, autoFailSave, saveBonuses, saveAdvReasons,
+             saveDisadvReasons, superSaver, semiSuperSaver };
+  }
+
+  /**
+   * The conditions a creature's statuses mean, under the names the rules use
+   * ("blind" is blinded, "dodge" is dodging). One mapping, for `assess` and for
+   * `saveSituation`.
+   */
+  static _conditionsFrom(statuses) {
+    const c = new Set();
+    const has = (k) => !!statuses?.has?.(k);
+    for (const k of ["prone", "restrained", "paralyzed", "stunned", "unconscious", "invisible",
+      "petrified", "poisoned", "frightened", "charmed", "grappled", "incapacitated"]) {
+      if (has(k)) c.add(k);
+    }
+    if (has("blinded") || has("blind")) c.add("blinded");
+    if (has("dodging") || has("dodge")) c.add("dodging");
+    if (has("deafened") || has("deaf")) c.add("deafened");
+    return c;
+  }
+
   static getSummaryTags(state) {
     const tags = [];
 
@@ -1577,9 +1615,10 @@ export class CombatState {
       tags.push({ label: "ROLL: ADVANTAGE", type: "bonus", icon: "fa-angles-up" });
     } else if (state.finalRollMode === "disadvantage") {
       tags.push({ label: "ROLL: DISADVANTAGE", type: "debuff", icon: "fa-angles-down" });
-    } else if (state.advantageSources.length > 0 && state.disadvantageSources.length > 0) {
-      tags.push({ label: "ADV + DISADV = NORMAL (cancelled)", type: "info", icon: "fa-equals" });
     }
+    // ⚠️ NO "ADV + DISADV = NORMAL (cancelled)" LINE (his rule, 2026-10-13: it
+    // "repeats the two lines under it. Remove that line."). The reason lines below
+    // name both sides; the roll's own mode says the rest.
 
     // Why advantage
     for (const src of state.advantageSources) {

@@ -116,6 +116,30 @@ export class DescriptionParser {
       rawText: text,
     };
 
+    /* ⚠️🔴 A CONDITION ON A SAVE'S TABLE IS THE TABLE'S, NEVER THE HIT'S (his table, 2026-10-12: Jeth's Spiked Chain hit for 13 piercing, ROLL SAVES was
+   never pressed, and Grappled, Restrained and Prone all went on. His words: "A
+   failure is one effect, chosen or a d6, not all three... Nothing from that list
+   goes on before the save is rolled and failed.")
+
+       The table lists them as rows a FAILED save picks one of. Read on their own,
+       the 2026-10-04 escape-DC change (below, _parseConditions) left nothing
+       near Restrained or Prone that looked like a save, so they read as "lands
+       on the hit" and the on-hit step put all three on. Every condition a table
+       row names is marked here, once, for every reader: it needs the save, and
+       it is the table's to land. */
+    try {
+      const fromTable = new Set((result.effectTable?.entries ?? [])
+        .flatMap(e => (e.effects ?? []).filter(fx => fx.type === "condition" && fx.condition))
+        .map(fx => String(fx.condition).toLowerCase()));
+      for (const c of (result.conditions ?? [])) {
+        if (!fromTable.has(String(c?.condition ?? "").toLowerCase())) continue;
+        c.requiresSave = true;
+        c.inTable = true;
+      }
+    } catch (err) {
+      console.warn(`ace-qol | could not mark which conditions belong to "${item?.name}"'s save table:`, err);
+    }
+
     // ── Cross-link bonusDamage entries with creatureTrigger sentence ──
     // If a bonus damage match sits in the SAME sentence as the creature
     // trigger phrase, that bonus is creature-gated. Mark it so the damage
@@ -1018,11 +1042,17 @@ export class DescriptionParser {
         }
       }
 
+      /* ⚠️ "IF IT IS MEDIUM OR SMALLER" IS PART OF THE ROW (his table,
+         2026-10-12: "grapple and restrained, and only if the target is Medium or
+         smaller. A Large shield guardian does not get this one."). */
+      const sizeLimit = entryLower.match(/if\s+(?:it|the\s+target)\s+is\s+(tiny|small|medium|large|huge|gargantuan)\s+or\s+smaller/);
+
       entries.push({
         range: [s.rangeStart, s.rangeEnd],
         name: s.name,
         description: description.slice(0, 150),
         effects: entryEffects,
+        ...(sizeLimit ? { maxSize: sizeLimit[1] } : {}),
       });
     }
 

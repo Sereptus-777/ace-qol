@@ -44,6 +44,7 @@
 // the moment it is needed, never imported, so this file cannot start a cycle.
 // ──────────────────────────────────────────────────────────────────────────────
 
+import { applyMessageMode } from "./foundry-compat.mjs";
 import { spellKey } from "./rules/spell-name.mjs";
 import { whoAnswers } from "./who-answers.mjs";
 import { safeShowForRoll, awaitDiceSettle, awaitArmedDicePeek } from "./dsn-utils.mjs";
@@ -931,7 +932,7 @@ async function deathSaveWithLuck(actor, roll, rolls, target) {
       speaker: ChatMessage.getSpeaker({ actor }),
     };
     // dnd5e posts this line in the table's roll mode; so does ACE.
-    try { ChatMessage.applyRollMode?.(chatData, CONFIG.Dice?.BasicRoll?.getMessageMode?.() ?? game.settings.get("core", "rollMode")); }
+    try { applyMessageMode(chatData); }
     catch (err) { console.warn(`${LOG} | could not read the roll mode for ${nameOf(actor)}'s death save line; it posts publicly:`, err); }
     message = await ChatMessage.create(chatData);
   }

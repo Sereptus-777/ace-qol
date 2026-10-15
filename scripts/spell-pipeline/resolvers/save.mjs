@@ -17,6 +17,7 @@
 
 import { MODULE_ID } from "../../ace-qol.mjs";
 import { firstActivityOfType } from "../../read-activities.mjs";
+import { notACreature } from "../../road/picker-rule.mjs";
 import { CombatState } from "../../combat-state.mjs";
 import { ConditionLibrary } from "../../condition-library.mjs";
 // Command ships one ACTIVITY PER WORD in dnd5e, so the GM's chosen word is
@@ -190,6 +191,7 @@ export class SaveResolver {
     const { aceWithinFt } = await import("../../geometry-utils.mjs");
     let targets = (canvas.tokens?.placeables ?? []).filter(t => {
       if (!t.actor) return false;
+      if (notACreature(t.actor, t.document)) return false;   // a Spiritual Weapon is not a creature
       if (t === source && filter.allowSelf !== true) return false;
       if (filter.excludeDead !== false && (_aceCreature(t.actor)?.hp?.value ?? 1) <= 0) return false;
       // "all" = every creature in range (Ghostly Howl); "enemies"/"allies" gate

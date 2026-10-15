@@ -390,15 +390,22 @@ export class BloodiedEngine {
     const name = tokenDoc?.name ?? actor.prototypeToken?.name ?? actor.name;
     const img = tokenDoc?.texture?.src ?? actor.prototypeToken?.texture?.src ?? actor.img ?? "icons/svg/blood.svg";
 
+    // ⚠️ READ AT A GLANCE, CUT INTO THE SLATE (his table, 2026-10-14: "why is
+    // 'Shield Guardian is bloodied' so small? Make it bigger... every one of
+    // those letters has got to be carved into that stone", and "No cards of ours
+    // have round portraits. They're all square."). The card head class is the
+    // one every ACE header uses, so it takes the same slate and the same carving;
+    // the reds stay the reds he approved.
     const content = `
-      <div class="ace-qol-bloodied-announce" style="display:flex;align-items:center;gap:8px;padding:4px 8px;border-left:3px solid #cc2222;background:rgba(204,34,34,0.08);border-radius:4px;">
-        <img class="ace-face" src="${img}" alt="${name}" style="width:36px;height:36px;border-radius:50%;border:2px solid #cc2222;" />
-        <div style="flex:1;">
-          <strong style="color:#cc2222;">${name}</strong>
-          <span style="opacity:0.9;"> is <b style="color:#cc2222;">BLOODIED</b>!</span>
-          <div style="font-size:0.8em;opacity:0.7;">Half hit points or below</div>
+      <div class="ace-qol-bloodied-announce ace-qol-card-head" style="display:flex;align-items:center;gap:12px;padding:8px 12px;border-left:4px solid #cc2222;border-radius:4px;">
+        <span class="ace-qol-head-well"><img class="ace-face" src="${img}" alt="${name}" style="display:block;width:56px;height:56px;border-radius:4px;border:1px solid #cc2222;" /></span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:20px;font-weight:700;line-height:1.25;">
+            <span style="color:#cc2222;">${name}</span> is <span style="color:#cc2222;">BLOODIED</span>!
+          </div>
+          <div style="font-size:15px;line-height:1.3;opacity:0.85;margin-top:2px;">Half hit points or below</div>
         </div>
-        <i class="fas fa-tint" style="color:#cc2222;font-size:1.4em;opacity:0.6;"></i>
+        <i class="fas fa-tint" style="color:#cc2222;font-size:1.8em;opacity:0.8;"></i>
       </div>
     `;
 

@@ -32,6 +32,7 @@ import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DamageApplicator } from "./damage-applicator.mjs";
 import { aceWithinFt } from "./geometry-utils.mjs";
+import { itemWords } from "./rules/creature-words.mjs";
 import { saveBonus, naturalD20 } from "./rolldata-utils.mjs";
 
 export class OverTimeEngine {
@@ -705,31 +706,59 @@ export class OverTimeEngine {
     for (const item of actor.items) {
       if (item.type !== "feat") continue;
       const name = String(item.name ?? "");
-      const desc = String(item.system?.description?.value ?? "")
-        .replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ");
+      // ⚠️ THE ONE READER OF AN ITEM'S WORDS (rules/creature-words.mjs): its
+      // lookups answered from the item, its tags read as what they say. Stripping
+      // the tags here left "[[/damage 10 type=heal]]" and "[[lookup
+      // @healing.formula]]" as nothing a number could be read from.
+      const desc = itemWords(item);
       const text = `${name}. ${desc}`;
 
       // Heal phrase, wording-tolerant: regains / regenerates / heals / recovers
       // N (hit points|hp). Different modules word this differently and in
       // different order, so we don't require it to sit right before "at the
       // start of" the way the old pattern did.
-      const healRe   = /(?:regains?|regenerates?|heals?|recovers?)\s+(\d+)\s+(?:hit\s*points?|hp)\b/i;
+      const healRe   = /(?:regains?|regenerates?|heals?|recovers?)\s+(\d+)\s+(?:heal(?:ing)?\s+)?(?:hit\s*points?|hp)\b/i;
       const healMatch = text.match(healRe);
       const startOfTurn = /start of (?:each of )?(?:its|their|his|her|the creature'?s)?\s*turns?/i.test(text);
       const nameRegen   = /regenerat|fast\s*healing/i.test(name);
+      // A spell or power used ON someone ("a creature you touch regains", "the
+      // target regains") is not this creature's own regeneration.
+      if (/\b(?:a creature you touch|the target) regains?\b/i.test(desc)) continue;
 
-      // Treat as regeneration if it's NAMED like it (and heals a number), OR it
-      // heals N HP at the start of a turn regardless of the feature's name.
-      const looksRegen = (nameRegen && /\d+\s+(?:hit\s*points?|hp)\b/i.test(text))
-                      || (!!healMatch && startOfTurn);
+      // ⚠️ DATA FIRST: the item's own heal activity says how much, when it says a
+      // plain number (dnd5e's 2024 guardian: "regains [[lookup @healing.formula]]").
+      const fromData = (() => {
+        try {
+          for (const a of (item.system?.activities?.values?.() ?? Object.values(item.system?.activities ?? {}))) {
+            if (a?.type !== "heal") continue;
+            const f = String(a.healing?.formula ?? "").trim();
+            if (/^\d+$/.test(f)) return parseInt(f);
+          }
+        } catch (_) { /* the words answer instead */ }
+        return 0;
+      })();
+
+      // Treat as regeneration if it's NAMED like it, OR it heals N HP at the
+      // start of a turn regardless of the feature's name.
+      const looksRegen = nameRegen || (!!healMatch && startOfTurn);
       if (!looksRegen) continue;
 
-      let amount = healMatch ? parseInt(healMatch[1]) : 0;
+      // ⚠️🔴 NEVER "ANY NUMBER OF HIT POINTS" (2026-10-14, his Shield Guardian
+      // regained 1, the second time). The old fallback took the first "N hit
+      // points" anywhere in the words, which in a regeneration is "if it has at
+      // least 1 hit point". The amount is the regaining number or nothing.
+      const amount = fromData || (healMatch ? parseInt(healMatch[1]) : 0);
       if (!(amount > 0)) {
-        const m2 = text.match(/(\d+)\s+(?:hit\s*points?|hp)\b/i);
-        amount = m2 ? parseInt(m2[1]) : 0;
+        const key = `${actor.id}:${item.id}`;
+        this._unreadRegen ??= new Set();
+        if (!this._unreadRegen.has(key)) {
+          this._unreadRegen.add(key);
+          console.warn(`${MODULE_ID} | ${actor.name}'s ${name}: named like a regeneration, and ACE could not read `
+            + `how many hit points it regains ("${desc.slice(0, 140)}"), so it does nothing. Run it by hand.`);
+          if (game.user?.isGM) ui.notifications?.warn(`${actor.name}'s ${name}: ACE could not read how much it regains. Run it by hand.`);
+        }
+        continue;
       }
-      if (!(amount > 0)) continue;
 
       // Shut-off damage types: "If it takes <types> damage ... doesn't function / can't regenerate"
       const sm = text.match(/takes?\s+([a-z, ]+?)\s+damage[^.]*?(?:doesn'?t|does not|no longer|can'?t|cannot)\s+(?:function|regenerat)/i)

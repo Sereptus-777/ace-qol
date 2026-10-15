@@ -8,6 +8,8 @@
 //       game.aceQol.diagnostics.perfSnapshot()
 // ──────────────────────────────────────────────────────────────────────────────
 
+import { chatRenderHook } from "./foundry-compat.mjs";
+
 const MODULE_ID = "ace-qol";
 const TAG = `${MODULE_ID} | Diagnostics`;
 
@@ -201,7 +203,9 @@ export function checkHooks() {
   const expectedHooks = [
     // [hookName, minExpected, description]
     ["dnd5e.rollAttackV2",        1, "Attack roll interception"],
-    ["renderChatMessage",         2, "Chat card rendering (damage buttons, loot cards, visibility)"],
+    // The hook this Foundry fires, from the one chat helper (foundry-compat.mjs):
+    // ACE has listened on renderChatMessageHTML since Foundry 13.
+    [chatRenderHook(),            2, "Chat card rendering (damage buttons, loot cards, visibility)"],
     ["updateActor",               1, "Death detection + bloodied"],
     ["updateToken",               1, "Unlinked token bloodied"],
     ["refreshToken",              1, "Bloodied visual overlay"],

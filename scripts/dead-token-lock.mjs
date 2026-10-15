@@ -32,6 +32,7 @@ import { isDead as isDeadFact } from "./is-down.mjs";
 // picker and engine aims through that helper, so this question is left for a
 // stray click on the canvas, which is the only thing it was ever for.
 import { DELIBERATE } from "./road/aim.mjs";
+import { notACreature } from "./road/picker-rule.mjs";
 
 export class DeadTokenLock {
 
@@ -198,6 +199,16 @@ export class DeadTokenLock {
               if (game.user?.isGM
                && !context?.[DELIBERATE] && DeadTokenLock.isDead(this)) {
                 DeadTokenLock._askBeforeTargeting(this, context);
+                return;
+              }
+
+              // ⚠️ A SPELL'S OWN TOKEN IS NOT A TARGET (his call, 2026-10-14). A
+              // Spiritual Weapon is a floating force with a token so it can be seen
+              // and moved: nothing aims at it, ACE included, so this is a wall.
+              const thing = notACreature(this.actor, this.document);
+              if (thing) {
+                DeadTokenLock._sayOnce(`thing:${this.id}`,
+                  `${this.name ?? "That"} is a ${thing}, not a creature: nothing can target it.`);
                 return;
               }
             }

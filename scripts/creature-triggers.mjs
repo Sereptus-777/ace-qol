@@ -32,7 +32,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { aceDistanceFt } from "./geometry-utils.mjs";
-import { readDeathBurst, readTurnAura, wordsRecipe, itemWords } from "./rules/creature-words.mjs";
+import { readDeathBurst, readTurnAura, wordsRecipe, itemWords, kindOf } from "./rules/creature-words.mjs";
 import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
 // What a save's DC comes to, the way dnd5e works it out (one resolver).
 import { saveDCOf } from "./rules/save-dc.mjs";
@@ -62,7 +62,14 @@ export class CreatureTriggers {
       CreatureTriggers.onTurnChange(combat, prior, current).catch(err =>
         console.error(`${LOG} | a burning body could not run on the turn change:`, err));
     });
-    console.debug(`${LOG} | online: death bursts and burning bodies fire from their own words.`);
+    // A stench's made save buys an immunity (its words say whose and how long).
+    // Every save, a player's included, reaches the active GM's screen as this
+    // signal once its dice are in (save-engine.mjs re-sends a player's).
+    Hooks.on(`${MODULE_ID}.saveComplete`, (payload) => {
+      CreatureTriggers._afterStenchSave(payload).catch(err =>
+        console.warn(`${LOG} | could not write a stench immunity after a made save:`, err));
+    });
+    console.debug(`${LOG} | online: death bursts, burning bodies and stenches fire from their own words.`);
   }
 
   /* ═══ 1. DEATH BURSTS ═══════════════════════════════════════════════════ */
@@ -172,12 +179,23 @@ export class CreatureTriggers {
 
   /** "A creature that starts its turn within N feet of it": the one starting, around every such source. */
   static async _auraOnArrival(victimDoc, scene) {
+    // ⚠️ ONE SAVE AGAINST A KIND (2024: "immune to the Stench of all ghasts").
+    // Two ghasts beside a creature ask it once: a made save is immunity to both,
+    // and a failed one is the same poison twice.
+    const askedKinds = new Set();
     for (const src of scene?.tokens?.contents ?? []) {
       if (!src?.actor || src.id === victimDoc.id) continue;
       for (const item of src.actor.items ?? []) {
         const aura = readTurnAura(item);
         if (!aura || aura.when !== "their-start") continue;
-        await CreatureTriggers._aura(src, item, aura, victimDoc);
+        const kindKey = aura.immunity?.allOfKind ? `${kindOf(src)}|${String(item.name).toLowerCase()}` : null;
+        if (kindKey && askedKinds.has(kindKey)) {
+          say(`${src.name}'s ${item.name}: ${victimDoc.name} already answers to one ${kindOf(src)}'s `
+            + `${item.name} this turn, and its words make that save count for all of them.`);
+          continue;
+        }
+        const asked = await CreatureTriggers._aura(src, item, aura, victimDoc);
+        if (kindKey && asked) askedKinds.add(kindKey);
       }
     }
   }
@@ -222,6 +240,19 @@ export class CreatureTriggers {
     }
     let caught = CreatureTriggers._around(sourceDoc, radius);
     if (only) caught = caught.filter(t => t.id === only.id);
+
+    // ⚠️ WHO ITS WORDS LEAVE OUT: "any creature (other than a ghast)".
+    if (aura.excludes) {
+      const leftOut = caught.filter(t => kindOf(t) === kindOf(aura.excludes));
+      if (leftOut.length) {
+        say(`${tag}: ${leftOut.map(t => t.name).join(", ")} ${leftOut.length === 1 ? "is a" : "are"} `
+          + `${aura.excludes}, which its words leave out.`);
+        caught = caught.filter(t => !leftOut.includes(t));
+      }
+    }
+    // A stench: who already made the save, and who cannot have its condition.
+    const stench = !!aura.condition && !(aura.dice ?? []).length;
+    if (stench) caught = await CreatureTriggers._stenchSpares(sourceDoc, item, aura, caught, tag);
     const inRange = caught.map(t => t.name);
 
     /* ⚠️🔴 "OF ITS CHOICE" IS A CHOICE SOMEBODY MAKES (his rule, 2026-10-04).
@@ -272,10 +303,116 @@ export class CreatureTriggers {
     // ⚠️ WHO WAS IN RANGE AND WHO WAS BURNED (his rule): a creature that was
     // standing there and did not burn has to be accounted for by name.
     say(`${tag}: within ${radius} feet ${when}: ${inRange.join(", ")}. `
-      + `Burned: ${caught.map(t => t.name).join(", ")}.`
+      + `${stench ? "Asked to save" : "Burned"}: ${caught.map(t => t.name).join(", ")}.`
       + `${spared.length ? ` Marked safe: ${spared.map(t => t.name).join(", ")}.` : ""}`
       + `${aura.choice && inRange.length === 1 ? " One creature in reach, so nothing was asked." : ""}`);
+    if (stench) {
+      const landed = CreatureTriggers._stenchRecipe(rec, aura, tag);
+      if (aura.immunity) CreatureTriggers._awaitStenchSaves(sourceDoc, item, aura, caught);
+      await CreatureTriggers._land(landed, item, actor, caught, "aura", `was beside ${name} ${when}`);
+      return true;
+    }
     await CreatureTriggers._land(rec, item, actor, caught, "aura", `was beside ${name} ${when}`);
+    return true;
+  }
+
+  /* ═══ 3. A STENCH ══════════════════════════════════════════════════════ */
+
+  /**
+   * Who a stench does not ask: a creature its made save already made immune
+   * (presence-engine.mjs holds that immunity, the one ACE has), and a creature
+   * that cannot have its condition at all (the target profile answers that, as
+   * it does for every condition). Each one is said by name.
+   */
+  static async _stenchSpares(sourceDoc, item, aura, caught, tag) {
+    let PresenceEngine = null, buildTargetProfile = null;
+    try { ({ PresenceEngine } = await import("./presence-engine.mjs")); }
+    catch (err) { console.warn(`${LOG} | ${tag}: the immunity reader did not load, so nobody is counted immune:`, err); }
+    try { ({ buildTargetProfile } = await import("./profiles/target-profile.mjs")); }
+    catch (err) { console.warn(`${LOG} | ${tag}: the target profile did not load, so nobody is counted immune to ${aura.condition}:`, err); }
+    const out = [];
+    for (const t of caught) {
+      const imm = aura.immunity && PresenceEngine ? PresenceEngine.immunityOn(t.actor, sourceDoc, item) : null;
+      if (imm) {
+        say(`${tag}: ${t.name} made this save before and is immune to it still (${imm.name}).`);
+        continue;
+      }
+      let cannot = false;
+      try { cannot = !!buildTargetProfile?.(t.actor, { token: t.object ?? t })?.immuneToCondition?.(aura.condition); }
+      catch (err) { console.warn(`${LOG} | ${tag}: could not ask whether ${t.name} can be ${aura.condition}; it is asked to save:`, err); }
+      if (cannot) {
+        say(`${tag}: ${t.name} cannot be ${aura.condition}, so it is not asked to save.`);
+        continue;
+      }
+      out.push(t);
+    }
+    return out;
+  }
+
+  /**
+   * The recipe a stench lands, with what its words say about the condition. A
+   * 2024 stench carries its Poisoned as an effect that lasts one turn; a 2014
+   * one has only the sentence, which no reader turned into a length, so the
+   * poison went on for good. "Until the start of its next turn" is one round,
+   * the same six seconds the 2024 effect is.
+   */
+  static _stenchRecipe(rec, aura, tag) {
+    const recipe = rec?.recipe;
+    if (!recipe) return rec;
+    const lasts = Number(aura.lastsSeconds) > 0 ? Number(aura.lastsSeconds) : null;
+    let named = false;
+    const onFail = (Array.isArray(recipe.onFail) ? recipe.onFail : []).map(o => {
+      if (o?.kind !== "condition") return o;
+      if (String(o.condition?.key ?? "").toLowerCase() === aura.condition) named = true;
+      if (!lasts || Number(o.condition?.duration) > 0) return o;
+      return { ...o, condition: { ...o.condition, duration: lasts } };
+    });
+    if (!named) {
+      onFail.push({ kind: "condition", condition: { key: aura.condition, duration: lasts, ends: null } });
+      say(`${tag}: its recipe did not carry ${aura.condition}; its words do, so a failed save puts it on.`);
+    }
+    return { ...rec, recipe: { ...recipe, onFail } };
+  }
+
+  /**
+   * Remember who was asked, so a made save can buy its immunity when its dice
+   * are in. Kept for ten minutes of real time: a save still unanswered after
+   * that is a card nobody is going to roll.
+   */
+  static _awaitStenchSaves(sourceDoc, item, aura, caught) {
+    CreatureTriggers._stenchAsked ??= new Map();
+    const now = Date.now();
+    for (const [k, v] of CreatureTriggers._stenchAsked) if (now - v.at > 600000) CreatureTriggers._stenchAsked.delete(k);
+    for (const t of caught) {
+      CreatureTriggers._stenchAsked.set(`${t.id}|${item.uuid}`, {
+        at: now,
+        mark: {
+          sourceActorId: sourceDoc.actor?.id ?? null,
+          sourceTokenId: sourceDoc.id,
+          sourceName: sourceDoc.name ?? sourceDoc.actor?.name ?? "it",
+          itemName: item.name,
+          itemUuid: item.uuid ?? null,
+          immuneHours: aura.immunity.hours,
+          sceneId: sourceDoc.parent?.id ?? null,
+          verb: "affect",
+          ...(aura.immunity.allOfKind ? { allOfKind: kindOf(sourceDoc) } : { perCreature: true }),
+        },
+      });
+    }
+  }
+
+  /** A save against a stench came back: made, it buys the immunity its words name. */
+  static async _afterStenchSave(payload) {
+    if (game.users?.activeGM !== game.user) return;
+    const asked = CreatureTriggers._stenchAsked;
+    if (!asked?.size || !payload?.itemUuid || !payload?.tokenDocId) return;
+    const key = `${payload.tokenDocId}|${payload.itemUuid}`;
+    const entry = asked.get(key);
+    if (!entry) return;
+    asked.delete(key);
+    if (payload.passed !== true) return;
+    const { PresenceEngine } = await import("./presence-engine.mjs");
+    await PresenceEngine._immunise(payload.actor, entry.mark, "it made the save");
   }
 
   /* ═══ Landing ══════════════════════════════════════════════════════════ */

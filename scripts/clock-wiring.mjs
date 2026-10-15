@@ -37,6 +37,10 @@ export class ClockWiring {
         const kind  = scene.getFlag(MODULE_ID, "sceneKind") ?? "dungeon";
         const pace  = scene.getFlag(MODULE_ID, "pace") ?? SCENE_KINDS[kind]?.pace ?? "cautious";
         const set   = paceSetFor(kind);
+        // Temperature (°C): blank is no hazard, and no scene is given a number
+        // by default (his rule, 2026-10-13). exposure.mjs reads it each hour.
+        const tRaw  = scene.getFlag(MODULE_ID, "temperature");
+        const temp  = (tRaw === null || tRaw === undefined || String(tRaw).trim() === "") ? "" : Number(tRaw);
 
         const kindOpts = Object.entries(SCENE_KINDS)
           .map(([k, v]) => `<option value="${k}" ${k === kind ? "selected" : ""}>${v.label}</option>`).join("");
@@ -57,6 +61,11 @@ export class ClockWiring {
               <label>Travel pace</label>
               <select name="flags.${MODULE_ID}.pace">${paceOpts}</select>
               <p class="hint">Hurrying costs 5 passive Perception — you walk past things.</p>
+            </div>
+            <div class="form-group">
+              <label>Temperature (°C)</label>
+              <input type="number" name="flags.${MODULE_ID}.temperature" value="${temp}" step="1" placeholder="blank: no hazard">
+              <p class="hint">Blank is no hazard. −20 or colder is extreme cold, 40 or hotter is extreme heat, anything between does nothing. Each hour on this scene, every creature makes a Constitution save or gains exhaustion.</p>
             </div>
           </fieldset>`;
 
@@ -240,9 +249,9 @@ export class ClockWiring {
     // speaker strip off, so "Rations" moves inside as the card's title, the way
     // "A new day" sits.
     await ChatMessage.create({
-      content: `<div style="background:#0f1014;border:1px solid #3a3122;border-left:4px solid #d4af37;
-                  border-radius:5px;padding:12px 14px;color:#c9bd94;font-size:14px;line-height:1.55;">
-        <div style="font-size:18px;font-weight:700;color:#d4af37;margin-bottom:2px;">Rations</div>
+      content: `<div style="background:#0f1014;border:1px solid #d4af37;
+                  border-radius:4px;padding:12px 14px;color:#c9bd94;font-size:14px;line-height:1.55;">
+        <div class="ace-qol-card-head" style="font-size:18px;font-weight:700;color:#f5d060;margin:-12px -14px 6px;padding:8px 14px;border-radius:4px 4px 0 0;">Rations</div>
         ${rows.join("")}
       </div>`,
       speaker: { alias: "Rations" },

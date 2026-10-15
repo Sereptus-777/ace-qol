@@ -18,6 +18,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { notACreature } from "./road/picker-rule.mjs";
 
 export class InitiativeTools {
 
@@ -128,7 +129,8 @@ export class InitiativeTools {
    */
   static async _populate(combat, kind) {
     const wantsPC = kind === "pc";
-    const isKind = (actor) => !!actor && (!!actor.hasPlayerOwner === wantsPC);
+    // A spell's own token (a Spiritual Weapon) is not a creature and rolls no initiative.
+    const isKind = (actor) => !!actor && !notACreature(actor) && (!!actor.hasPlayerOwner === wantsPC);
 
     const controlled = (canvas?.tokens?.controlled ?? []).filter(t => isKind(t.actor));
     const from = controlled.length ? "the tokens you have selected" : "every one on this scene";

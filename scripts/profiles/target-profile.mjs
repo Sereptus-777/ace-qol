@@ -166,6 +166,64 @@ export function buildTargetProfile(actor, { token = null } = {}) {
       return false;
     },
 
+    /**
+     * Does this creature resist a damage type? Same contract as immuneToDamage,
+     * reading `dr` the way that reads `di`: the structured list first (with the
+     * nonmagical bypass), then the free-text box.
+     *
+     * ⚠️ THE PROFILE HAD NO WAY TO ASK THIS (his rule, 2026-10-13: "the profile has
+     * no resistance method. Add resistantToDamage beside immuneToDamage"), so the
+     * hour of extreme cold read cold resistance off the sheet by itself.
+     *
+     * @param {string} type             a damage type id, e.g. "cold"
+     * @param {object} [opts]
+     * @param {boolean} [opts.magical]  true for spells and magic items
+     */
+    resistantToDamage(type, { magical = false } = {}) {
+      const id = String(type ?? "").toLowerCase().trim();
+      if (!id || id === "none") return false;
+      try {
+        const dr = sys.traits?.dr ?? {};
+        const listed = creature.dr?.has?.(id)
+          || (dr.value instanceof Set ? dr.value.has(id)
+            : (Array.isArray(dr.value) && dr.value.includes(id)));
+        if (listed) {
+          const physical = id === "bludgeoning" || id === "piercing" || id === "slashing";
+          const bypasses = dr.bypasses instanceof Set ? dr.bypasses
+            : new Set(Array.isArray(dr.bypasses) ? dr.bypasses : []);
+          if (physical && magical && bypasses.has("mgc")) return false;
+          return true;
+        }
+        const custom = String(dr.custom ?? "").toLowerCase();
+        if (custom && custom.includes(id)) {
+          if (magical && /nonmagical|non-magical/.test(custom)) return false;
+          return true;
+        }
+      } catch (_) { /* fall through: unknown is never "resistant" */ }
+      return false;
+    },
+
+    /**
+     * Is this creature vulnerable to a damage type? Same contract again, reading
+     * `dv`: the structured list first, then the free-text box.
+     *
+     * @param {string} type  a damage type id, e.g. "fire"
+     */
+    vulnerableToDamage(type) {
+      const id = String(type ?? "").toLowerCase().trim();
+      if (!id || id === "none") return false;
+      try {
+        const dv = sys.traits?.dv ?? {};
+        const listed = creature.dv?.has?.(id)
+          || (dv.value instanceof Set ? dv.value.has(id)
+            : (Array.isArray(dv.value) && dv.value.includes(id)));
+        if (listed) return true;
+        const custom = String(dv.custom ?? "").toLowerCase();
+        if (custom && custom.includes(id)) return true;
+      } catch (_) { /* fall through: unknown is never "vulnerable" */ }
+      return false;
+    },
+
     /** This creature's total modifier for a saving throw. */
     saveMod(ability) {
       // Several offered ("str/dex", a 2024 grapple or shove): the creature uses its

@@ -24,6 +24,7 @@
 // framework here is built to extend into them.
 // ──────────────────────────────────────────────────────────────────────────────
 
+import { regionTestPoint } from "./foundry-compat.mjs";
 import { MODULE_ID } from "./ace-qol.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
 
@@ -524,11 +525,10 @@ export class Situation {
         // occupancy is the correct and simpler test. Regions BETWEEN the two
         // still block, and a SUBJECT inside a region is still unseeable
         // (the region isn't skipped for the outside viewer).
+        // The document first, the placeable as the fallback: foundry-compat.mjs.
         try {
-          if (region.testPoint?.({ x: a.x, y: a.y, elevation: eA })) continue;
-        } catch (_) {
-          try { if (region.object?.testPoint?.(a, eA)) continue; } catch (_) {}
-        }
+          if (regionTestPoint(region, { x: a.x, y: a.y, elevation: eA })) continue;
+        } catch (_) { /* unanswerable: the viewer is not counted as inside it */ }
 
         // Does the sight line pass through this space at all?
         let crosses = false;
@@ -536,11 +536,8 @@ export class Situation {
           const t = i / n;
           const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
           const elev = eA + (eB - eA) * t;
-          try {
-            crosses = region.testPoint?.({ x: p.x, y: p.y, elevation: elev }) ?? false;
-          } catch (_) {
-            try { crosses = region.object?.testPoint?.(p, elev) ?? false; } catch (_) {}
-          }
+          try { crosses = regionTestPoint(region, { x: p.x, y: p.y, elevation: elev }); }
+          catch (_) { crosses = false; }
         }
         if (!crosses) continue;
 

@@ -261,6 +261,8 @@ export class SpellTargetPicker {
       // corpse could not be raised. `isDead` keeps its old meaning, "not standing",
       // for the weapon picker.
       const life = lifeStateOf(tok.actor, tok.document);
+      // A spell's own token (a Spiritual Weapon) is not a creature: never a row.
+      if (life.state === "thing") continue;
       const rule = pickable(kind, life);
       const isDead = !pickable("harm", life).ok;
 

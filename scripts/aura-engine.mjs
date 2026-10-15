@@ -44,6 +44,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { aceDistanceFt, aceMeasuredPosition } from "./geometry-utils.mjs";
+import { notACreature } from "./road/picker-rule.mjs";
 
 // Hardcoded literal — TDZ-safe (see stealth-engine.mjs comment)
 const FLAG_NS = "ace-qol";
@@ -424,6 +425,8 @@ export class AuraEngine {
     const shouldHave = new Map();
     for (const t of tokens) {
       if (!t.actor) continue;
+      // A spell's own token (a Spiritual Weapon) is not a creature: no aura lands on it.
+      if (notACreature(t.actor, t.document)) continue;
       const myMap = new Map();
       for (const src of sources) {
         if (src.suppressed) continue; // source is incapacitated etc.

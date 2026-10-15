@@ -39,6 +39,7 @@ import { revokeVorpalLock } from "../death-pipeline.mjs";
 import { CardDoor } from "../road/doors.mjs";
 import { STRICT_REVIVES, ORDINARY_REVIVES, revivesTheDead } from "../road/picker-rule.mjs";
 import { aimAt } from "../road/aim.mjs";
+import { isSpiritualWeapon } from "../rules/spell-name.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | gate";
@@ -247,6 +248,10 @@ export function pressRules() {
       test(ctx) {
         const { item, activity, actor, targets } = ctx;
         if (item?.type !== "spell" || !actor) return null;
+        // ⚠️ SPIRITUAL WEAPON IS AIMED FROM WHAT IT PLACES (2026-10-14): the attack
+        // is the weapon's, at a creature within 5 feet of wherever the weapon
+        // appears, so nobody can be picked before it is on the map.
+        if (isSpiritualWeapon(item)) return null;
         // ⚠️ A REVIVE PRESSED WITH NOBODY TARGETED PICKS FIRST (Phase 4, 2026-09-15).
         // The picker offers the dead, killed for good included, and picking presses
         // it again, so this gate sees who it is aimed at and Killed for good can

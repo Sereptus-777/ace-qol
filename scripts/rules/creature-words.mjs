@@ -36,6 +36,17 @@ const DAMAGE_TYPES = new Set(["acid", "bludgeoning", "cold", "fire", "force", "l
 
 const SAVES = /\bsaving throw\b|\bDC \d+\b|\bmust succeed on\b/i;
 
+/**
+ * "Any creature", "A creature that", "any creature (other than a ghast) that",
+ * "Any creature other than a troglodyte that", then "starts its turn within 5
+ * feet of the" or "starts its turn in a 5-foot Emanation originating from the".
+ * Groups: 1 who it leaves out, 2 or 3 the feet.
+ */
+const THEIR_START = /\b(?:a|any|each) creature,? (?:\(?other than (?:an? |the )?([\w' -]+?)\)?,? )?(?:that )?starts its turn (?:within (\d+)\s*(?:ft\.?|feet) of|in an? (\d+)[- ]foot emanation (?:originating )?(?:from|around)) (?:the |it\b)/i;
+
+/** "until the start of its next turn": one round, the way a one-turn effect is six seconds. */
+const UNTIL_ITS_NEXT_START = /\buntil the start of (?:its|their|the creature's|the target's) next turn\b/i;
+
 /* ═══ The words, as a person reads them ═══════════════════════════════════ */
 
 /**
@@ -72,6 +83,12 @@ export function plainWords(html, { item = null } = {}) {
   s = s.replace(/(?:&|@)\w+\[[^\]]*\]\{([^}]*)\}/g, "$1");
   s = s.replace(/(?:&|@)\w+\[([^\]|]*)[^\]]*\]/g, "$1");
   s = s.replace(/\[\[[^\]]*\]\]\{([^}]*)\}/g, "$1");
+  // ⚠️ A HEAL WRITTEN AS A DAMAGE TAG IS ITS NUMBER (2026-10-14). D&D Beyond's
+  // importer writes "regains [[/damage 10 type=heal average=false]] hit points";
+  // with no dice in it the line below made that "(damage)", and the regeneration
+  // reader then took "at least 1 hit point" for the amount (his Shield Guardian
+  // regained 1) or found nothing and never regenerated at all.
+  s = s.replace(/\[\[\/(?:damage|dmg|heal|healing)\s+(\d+)\s+type=(?:heal|healing|temphp)\b[^\]]*\]\]/gi, "$1");
   // Damage enrichers keep their dice and type; a bare one keeps its place.
   s = s.replace(/\[\[\/(?:damage|dmg)\s+([^\]]*?)\]\]/gi, (_m, body) => {
     const dice = String(body).match(/\d*d\d+(?:\s*[+-]\s*\d+)?/i)?.[0];
@@ -249,12 +266,31 @@ export function readDeathBurst(item) {
  *    it takes 10 (3d6) fire damage"                    → its own turn, starts
  *   "A creature that starts its turn within 5 feet of the X takes ..."
  *                                                       → the other creature's turn
+ *   "Any creature that starts its turn within 5 feet of the ghast must succeed
+ *    on a DC 10 Constitution saving throw or be poisoned until the start of its
+ *    next turn. On a successful saving throw, the creature is immune to the
+ *    ghast's Stench for 24 hours."                     → the other creature's turn,
+ *                                                         a save and a condition
+ *
+ * ⚠️ A STENCH IS A TURN AURA WITH NO DAMAGE (his call, 2026-10-14: "Ghast stench
+ * first", in the turn-start engine). The other creature's turn used to need the
+ * word "damage", so the 2014 ghast, the hezrou and the troglodyte, and the 2024
+ * "Constitution Saving Throw: DC 10, any creature (other than a ghast) that
+ * starts its turn in a 5-foot Emanation originating from the ghast. Failure: The
+ * target has the Poisoned condition until the start of its next turn", caught
+ * nobody. A save that only puts a condition on is one now, with what its words
+ * say about who is left out, how long the condition lasts, and the immunity a
+ * made save buys (2014: that ghast, 24 hours; 2024: every ghast, 1 hour).
+ * ⚠️ A GAZE IS NOT ONE: the 2014 basilisk "starts its turn within 30 ft." too,
+ * and the basilisk "can force" the save. That is the gaze engine's.
  *
  * A burning TARGET ("the target takes 1d6 fire damage at the end of each of its
  * turns") is not this: nobody else is caught, only the one that was set alight.
  *
  * @returns {null|{when: "own-end"|"own-start"|"their-start", radiusFt: number|null,
- *   choice: boolean, unlessIncapacitated: boolean, dice: Array<{formula,type}>, sentence: string}}
+ *   choice: boolean, unlessIncapacitated: boolean, dice: Array<{formula,type}>, sentence: string,
+ *   condition?: string|null, lastsSeconds?: number|null, excludes?: string|null,
+ *   immunity?: {hours: number, allOfKind: boolean}|null}}
  */
 export function readTurnAura(item) {
   if (!isPassive(item)) return null;
@@ -280,19 +316,78 @@ export function readTurnAura(item) {
         placeholder: placeholderIndex(sents, s),
       };
     }
-    const theirs = s.match(/\b(?:a|any|each) creature (?:that )?starts its turn within (\d+)\s*(?:ft\.?|feet) of (?:the |it\b)/i);
-    if (theirs && /\btakes?\b|\bmust (?:succeed|make)\b/i.test(s) && /\bdamage\b/i.test(`${s} ${next}`)) {
-      return {
-        when: "their-start",
-        radiusFt: Number(theirs[1]),
-        choice: false,
-        unlessIncapacitated: /\bunless (?:the )?[\w' -]+? (?:has the )?incapacitated\b/i.test(`${s} ${next}`),
-        dice: diceIn(s),
-        save: saves,
-        sentence: s,
-        placeholder: placeholderIndex(sents, s),
-      };
+    const theirs = s.match(THEIR_START);
+    if (theirs && !/\bcan force\b/i.test(s)) {
+      const both = `${s} ${next}`;
+      const radiusFt = Number(theirs[2] ?? theirs[3]);
+      const excludes = theirs[1] ? theirs[1].trim().toLowerCase() : null;
+      const unlessIncapacitated = /\bunless (?:the )?[\w' -]+? (?:has the )?incapacitated\b/i.test(both);
+      if (/\btakes?\b|\bmust (?:succeed|make)\b/i.test(s) && /\bdamage\b/i.test(both)) {
+        return {
+          when: "their-start",
+          radiusFt,
+          choice: false,
+          unlessIncapacitated,
+          dice: diceIn(s),
+          save: saves,
+          sentence: s,
+          placeholder: placeholderIndex(sents, s),
+          excludes,
+        };
+      }
+      // A save that only puts a condition on: a stench.
+      const condition = conditionIn(both);
+      if (saves && condition && /\bmust (?:succeed|make)\b|\bsaving throw\b/i.test(both)) {
+        return {
+          when: "their-start",
+          radiusFt,
+          choice: false,
+          unlessIncapacitated,
+          dice: [],
+          save: true,
+          sentence: s,
+          placeholder: null,
+          condition,
+          lastsSeconds: UNTIL_ITS_NEXT_START.test(both) ? 6 : null,
+          excludes,
+          immunity: immunityIn(sents),
+        };
+      }
     }
+  }
+  return null;
+}
+
+/**
+ * A creature's kind, by its own name: a token whose actor is "Ghast", the word
+ * "ghast" and the word "ghasts" are all "ghast". Takes a token, an actor or a
+ * word. What "other than a ghast" and "all ghasts" are measured against.
+ */
+export function kindOf(x) {
+  const raw = typeof x === "string" ? x : (x?.actor?.name ?? x?.name ?? "");
+  return String(raw).trim().toLowerCase().replace(/s$/, "");
+}
+
+/** The first condition a stretch of words names, or null. */
+function conditionIn(text) {
+  for (const w of String(text ?? "").toLowerCase().match(/[a-z]+/g) ?? []) {
+    if (CONDITIONS.has(w)) return w;
+  }
+  return null;
+}
+
+/**
+ * What a made save buys: "the creature is immune to the ghast's Stench for 24
+ * hours" (that one creature), "immune to the Stench of all ghasts for 1 hour" /
+ * "immune to the stench of all troglodytes for 1 hour" (every one of its kind).
+ * @returns {{hours: number, allOfKind: boolean}|null}
+ */
+function immunityIn(sents) {
+  for (const x of sents) {
+    const m = x.match(/\bimmune to (?:the )?([^.]*?)\bfor (?:the next )?(\d+) hours?\b/i);
+    if (!m) continue;
+    if (!/\bsuccess/i.test(x)) continue;
+    return { hours: Number(m[2]), allOfKind: /\ball\b/i.test(m[1]) };
   }
   return null;
 }

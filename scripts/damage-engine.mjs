@@ -1500,7 +1500,7 @@ export class DamageEngine {
         // ⚠️ THE DIE AND HIT OR MISS ARE THE TABLE'S; THE CHIPS AND THE TOTAL ARE
         // THE ATTACKER'S, THE AC IS THE TARGET'S (his rule, 2026-10-11).
         + `<div style="flex:1;min-width:0;line-height:1.55;"><div style="font-size:12px;color:#c8c6c0;">${bonusSpan(_chips.join(" "), attActor?.id ?? null)}</div>`
-        + `<div style="font-size:11px;color:#8a8a92;">${acSpan(`vs AC ${targetAC}`, chosen?.actor?.id ?? chosen?.document?.actorId ?? null)}</div></div>`
+        + `<div style="font-size:11px;color:#8a8a92;">${acSpan(`AC ${targetAC}`, chosen?.actor?.id ?? chosen?.document?.actorId ?? null)}</div></div>`
         + `<div style="text-align:right;flex:0 0 auto;"><div style="font-size:23px;font-weight:800;color:#fff;line-height:1;">${bonusSpan(String(cleaveTotal), attActor?.id ?? null)}</div>`
         + `<span style="display:inline-block;margin-top:5px;padding:2px 9px;border-radius:4px;font-size:11px;font-weight:800;letter-spacing:.5px;${_badgeStyle}">${_badgeLabel}</span></div>`
         + `</div>`

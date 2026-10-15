@@ -23,6 +23,8 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { HolySymbol } from "./holy-symbol.mjs";
+import { Exposure } from "./exposure.mjs";
+import { writeExhaustion, repairExhaustion, exhaustionWords, exhaustionMax } from "./exhaustion.mjs";
 
 const PANEL_ID = "ace-qol-effects-panel";
 
@@ -113,6 +115,10 @@ export class EffectsPanel {
     Hooks.on("createActiveEffect", refreshIfMine);
     Hooks.on("updateActiveEffect", refreshIfMine);
     Hooks.on("deleteActiveEffect", refreshIfMine);
+    // The exhaustion line and the cold's countdown live on the actor itself.
+    Hooks.on("updateActor", (actor) => {
+      if (this._currentActor && actor?.id === this._currentActor.id) this._renderDebounced();
+    });
 
     // Re-render on combat turn + time advance so synthetic countdowns (e.g. the
     // Holy Symbol's Sunlight indicator) tick down live in the panel.
@@ -227,6 +233,10 @@ export class EffectsPanel {
 
   _show(actor) {
     this._currentActor = actor;
+    // A level the sheet holds with its condition switched off or missing is put
+    // right the moment the GM looks at it (exhaustion.mjs). The panel redraws
+    // from the effect hooks when it lands.
+    if (game.user.isGM) repairExhaustion(actor);
     this._render();
   }
 
@@ -441,8 +451,11 @@ export class EffectsPanel {
 
   _collectActive(actor) {
     const out = [];
+    // dnd5e's own exhaustion effect is the exhaustion line above the list, said once.
+    const ownLine = this._exhaustionOf(actor) !== null;
     for (const effect of actor.allApplicableEffects?.() ?? actor.effects ?? []) {
       if (effect.disabled) continue;
+      if (ownLine && effect.statuses?.has?.("exhaustion")) continue;
       if (this._isPassive(effect)) continue;
       out.push(effect);
     }
@@ -574,8 +587,15 @@ export class EffectsPanel {
     // directly (not via game.aceQol) so a later registry reassignment can't
     // hide it.
     const sun      = HolySymbol.getCasterSunlightIndicators?.(this._currentActor) ?? [];
+    // An hour in the cold (exposure.mjs): the next save, or what protects it.
+    const exposed  = Exposure.statusFor(this._currentActor);
+    // ⚠️ ALWAYS SHOWN, "none" INCLUDED (his rule, 2026-10-12: "The effects panel
+    // always shows it, including 'Exhaustion: none'"). Null only for a creature
+    // dnd5e gives no exhaustion at all.
+    const exhaustion = this._exhaustionOf(this._currentActor);
 
-    if (!active.length && !auras.length && !passives.length && !sun.length) {
+    if (!active.length && !auras.length && !passives.length && !sun.length
+        && !exposed.length && exhaustion === null) {
       // Nothing to show — hide panel entirely
       if (this._panelEl) { this._panelEl.remove(); this._panelEl = null; }
       return;
@@ -584,10 +604,10 @@ export class EffectsPanel {
     // Auto-expand if there are active conditions (stunned, charmed, prone, etc.)
     // or a live timed indicator like Sunlight — user shouldn't have to click
     // the chevron to see them.
-    if (active.length > 0 || sun.length > 0) this._collapsed = false;
+    if (active.length > 0 || sun.length > 0 || exposed.length > 0) this._collapsed = false;
 
     const el = this._ensurePanel();
-    const counts = `${active.length + sun.length}A · ${auras.length}U · ${passives.length}P`;
+    const counts = `${active.length + sun.length + exposed.length}A · ${auras.length}U · ${passives.length}P`;
     const collapsedClass = this._collapsed ? " ace-qol-effects-panel-collapsed" : "";
 
     el.className = `ace-qol-effects-panel${collapsedClass}`;
@@ -600,10 +620,12 @@ export class EffectsPanel {
         </div>
         <span class="ace-qol-effects-panel-counts" title="Active · aUras · Passive">${counts}</span>
       </div>
+      ${exhaustion !== null ? this._renderExhaustionRow(exhaustion) : ""}
       <div class="ace-qol-effects-panel-body">
-        ${(active.length || sun.length) ? `
+        ${(active.length || sun.length || exposed.length) ? `
           <div class="ace-qol-effects-section">
             <div class="ace-qol-effects-section-label">Active</div>
+            ${exposed.map(x => this._renderExposureRow(x)).join("")}
             ${sun.map(s => this._renderSunlightRow(s)).join("")}
             ${active.map(e => this._renderEffectRow(e)).join("")}
           </div>
@@ -631,6 +653,92 @@ export class EffectsPanel {
     this._wireRows(el, [...active, ...passives]);
     this._wireAuraRows(el, auras);
     this._wireSunlightRows(el);
+    this._wireExhaustionRow(el);
+    this._wireExposureRows(el);
+  }
+
+  /** The creature's exhaustion level, or null when dnd5e gives it none. */
+  _exhaustionOf(actor) {
+    const v = actor?.system?.attributes?.exhaustion;
+    if (v === undefined || v === null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /**
+   * The exhaustion line: above the list, so it shows on a folded panel too.
+   * The GM steps it by hand; dnd5e keeps its own effect and icon in step.
+   */
+  _renderExhaustionRow(level) {
+    const max = exhaustionMax();
+    const base = CONFIG.DND5E?.conditionTypes?.exhaustion?.img ?? "systems/dnd5e/icons/svg/statuses/exhaustion.svg";
+    const icon = level > 0
+      ? (CONFIG.ActiveEffect?.documentClass?._getExhaustionImage?.(level) ?? base.replace(/\.(\w+)$/, `-${level}.$1`))
+      : base;
+    const word = level <= 0 ? "none" : `level ${level}`;
+    // What the level does, in the rules the sheet is applying (his rule,
+    // 2026-10-12: "The exhaustion row names what the level does").
+    const does = exhaustionWords(level);
+    const steps = game.user.isGM ? `
+        <div class="ace-qol-exhaustion-steps">
+          <button type="button" class="ace-qol-exhaustion-step" data-step="-1" title="Remove a level of exhaustion" ${level <= 0 ? "disabled" : ""}>&minus;</button>
+          <button type="button" class="ace-qol-exhaustion-step" data-step="1" title="Add a level of exhaustion" ${level >= max ? "disabled" : ""}>+</button>
+        </div>` : "";
+    return `
+      <div class="ace-qol-effect-row ace-qol-exhaustion-row${level > 0 ? " ace-qol-exhaustion-on" : ""}">
+        <img src="${icon}" class="ace-qol-effect-icon" alt="" />
+        <div class="ace-qol-effect-info">
+          <span class="ace-qol-exhaustion-text">Exhaustion: ${word}</span>
+          ${does ? `<span class="ace-qol-exhaustion-does">${foundry.utils.escapeHTML(does)}</span>` : ""}
+        </div>
+        ${steps}
+      </div>
+    `;
+  }
+
+  _wireExhaustionRow(el) {
+    el.querySelectorAll?.(".ace-qol-exhaustion-step").forEach(btn => {
+      btn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!game.user.isGM) return;
+        const actor = this._currentActor;
+        const cur = this._exhaustionOf(actor);
+        if (!actor || cur === null) return;
+        const next = Math.max(0, Math.min(exhaustionMax(), cur + Number(btn.dataset.step)));
+        if (next === cur) return;
+        // ⚠️ THE SHEET'S OWN WRITE, AND THE SWITCH ON (his find, 2026-10-12: "The
+        // plus and minus are only changing the panel"). See exhaustion.mjs.
+        btn.disabled = true;
+        await writeExhaustion(actor, next, "set by hand on the effects panel");
+      });
+    });
+  }
+
+  /** An hour in the cold, counting down to its next save (exposure.mjs). */
+  _renderExposureRow(x) {
+    const esc = foundry.utils.escapeHTML;
+    return `
+      <div class="ace-qol-effect-row ace-qol-exposure-row" data-exposure-key="${esc(x.key)}" title="${esc(x.name)}">
+        <img src="${x.icon}" class="ace-qol-effect-icon" alt="" />
+        <div class="ace-qol-effect-info">
+          <span class="ace-qol-effect-name">${esc(x.name)}</span>
+          <span class="ace-qol-effect-duration">${esc(x.pill)}</span>
+        </div>
+      </div>
+      <div class="ace-qol-effect-tooltip" data-exposure-key="${esc(x.key)}" hidden>${esc(x.tip)}</div>
+    `;
+  }
+
+  _wireExposureRows(el) {
+    el.querySelectorAll?.(".ace-qol-exposure-row[data-exposure-key]").forEach(row => {
+      row.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const tip = el.querySelector(`.ace-qol-effect-tooltip[data-exposure-key="${row.dataset.exposureKey}"]`);
+        if (tip) tip.hidden = !tip.hidden;
+      });
+    });
   }
 
   /**

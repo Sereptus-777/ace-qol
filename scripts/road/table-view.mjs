@@ -994,14 +994,23 @@ export const TableView = {
    *        "ace-artificer" when Forge runs without QOL)
    * @param {boolean} [o.render]   also fill and reveal at render, for a module
    *        with no chrome pass of its own (QOL's registerAceChrome does both)
+   * @param {Function} [o.onRender] the module's one chat helper
+   *        (onRenderChatMessage in its foundry-compat.mjs), which picks the hook
+   *        Foundry 13 or 14 fires. Handed in because this file is one file in two
+   *        modules, byte for byte, and imports nothing.
    */
-  register({ moduleId = "ace-qol", render = false } = {}) {
+  register({ moduleId = "ace-qol", render = false, onRender = null } = {}) {
     if (this._registered) return;
     this._registered = true;
     MODULE_ID = moduleId;
     SOCKET = `module.${MODULE_ID}`;
     if (render) {
-      Hooks.on("renderChatMessageHTML", (message, el) => {
+      const listen = (typeof onRender === "function") ? onRender : (fn) => {
+        console.warn(`${MODULE_ID} | the table view was registered without its module's chat `
+          + `helper, so it listens on renderChatMessageHTML, which Foundry 13 and 14 both fire.`);
+        Hooks.on("renderChatMessageHTML", fn);
+      };
+      listen((message, el) => {
         fillRendered(message, el);
         if (game.user?.isGM) {
           for (const g of el?.querySelectorAll?.(".ace-qol-gm-only, .ace-qol-dmg-gm-controls, .forge-gm-only") ?? []) {

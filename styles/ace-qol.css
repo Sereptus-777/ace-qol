@@ -269,7 +269,8 @@
 /* The attacker, on both cards (his rule, 2026-10-11: "The attacker's portrait is
    too small. Make it bigger. 'Attacks Jeth' only a little bigger."). */
 .ace-qol-atk-portrait.ace-qol-atk-attacker { width: 52px; height: 52px; flex: 0 0 52px; }
-.ace-qol-atk-item-name.ace-qol-atk-attacks { font-size: 1.1rem; overflow-wrap: anywhere; min-width: 0; }
+.ace-qol-atk-item-name.ace-qol-atk-attacks { font-size: 1.1rem; overflow-wrap: normal; word-break: normal;
+  flex: 1 1 14ch; min-width: 0; }
 /* "The words 'Rolled a 17 and hit.' move one character width to the right, off
    the die. The yellow number stays the size it is." */
 .ace-qol-atk-table .ace-qol-atk-table-line { margin-left: 1ch; }
@@ -465,7 +466,7 @@
 }
 
 .ace-qol-atk-ac {
-  color: #448aff;
+  color: #ff9100;           /* every AC and DC is orange (his rule, 2026-10-13) */
   font-size: 0.75rem;
   font-weight: 600;
   flex-shrink: 0;
@@ -486,7 +487,9 @@
 
 .ace-qol-hit     { color: #4ade80; background: rgba(74, 222, 128, 0.10); border-color: rgba(74, 222, 128, 0.22); }
 .ace-qol-crit    { color: #f5d060; background: rgba(245, 208, 96, 0.12); border-color: rgba(245, 208, 96, 0.4); text-shadow: 0 0 8px rgba(245, 208, 96, 0.45); }
-.ace-qol-miss    { color: #9ca3af; background: rgba(156, 163, 175, 0.08); border-color: rgba(156, 163, 175, 0.2); }
+/* ⚠️ MISS IS RED (his rule, 2026-10-13: "MISS and FAIL should always be in red").
+   The save card's own FAIL red. */
+.ace-qol-miss    { color: #ff1744; background: rgba(255, 23, 68, 0.12); border-color: rgba(255, 23, 68, 0.3); }
 .ace-qol-fumble  { color: #f87171; background: rgba(248, 113, 113, 0.10); border-color: rgba(248, 113, 113, 0.28); }
 
 /* ─── Tags (conditions, advantages, resistances) ─────────────────────── */
@@ -1703,8 +1706,11 @@
    SAVE CARDS
    ═══════════════════════════════════════════════════════════════════════════════ */
 
+/* ⚠️ THE ATTACK CARD'S GOLD LINE, NOT BLUE (his rule, 2026-10-13: "The Frostbite
+   card's outline is blue, and every ACE card uses the attack card's gold line
+   instead. Find where the blue is set and stop setting it."). It was set here. */
 .ace-qol-save-card, .ace-qol-save-results-card {
-  background: #1a1a1e; border: 1px solid #448aff; border-radius: 4px;
+  background: #1a1a1e; border: 1px solid #d4af37; border-radius: 4px;
   overflow: hidden; font-family: 'Segoe UI', sans-serif;
 }
 
@@ -1715,7 +1721,7 @@
   display: block;                 /* NOT flex — flex squeezed the words into columns */
   padding: 7px 11px;
   background: linear-gradient(180deg, rgba(68,138,255,0.16), rgba(68,138,255,0.05));
-  border-bottom: 1px solid rgba(68,138,255,0.30);
+  border-bottom: 1px solid #333;          /* the attack header's own divider */
   color: #dfe7f5; font-size: 13.5px; line-height: 1.4;
 }
 .ace-qol-save-cast-line i { color: #6ba4ff; font-size: 13px; margin-right: 5px; }
@@ -4711,6 +4717,63 @@
   flex-shrink: 0;
 }
 
+/* ── The exhaustion line (always shown, folded panel too) and the cold's row ──
+   His rule, 2026-10-12: "The effects panel always shows it, including
+   'Exhaustion: none'... a level can also be added by hand." The effect row's own
+   classes; only the colours and the GM's two steps are its own. */
+.ace-qol-exhaustion-row {
+  cursor: default;
+  border-bottom: 1px solid rgba(212, 175, 55, 0.3);
+}
+.ace-qol-exhaustion-text {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #c8c8c8;
+}
+.ace-qol-exhaustion-on .ace-qol-exhaustion-text {
+  color: #e08a7a;
+}
+.ace-qol-exhaustion-does {
+  font-size: 14px;
+  line-height: 1.3;
+  color: #c9bd94;
+}
+.ace-qol-exhaustion-steps {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.ace-qol-exhaustion-step {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  line-height: 26px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #d4af37;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(212, 175, 55, 0.45);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.ace-qol-exhaustion-step:hover:not(:disabled) {
+  background: rgba(212, 175, 55, 0.18);
+}
+.ace-qol-exhaustion-step:focus-visible {
+  outline: 2px solid #d4af37;
+  outline-offset: 1px;
+}
+.ace-qol-exhaustion-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.ace-qol-exposure-row .ace-qol-effect-duration {
+  background: #8fc3e8;
+  color: #0f1a24;
+}
+
 /* ── Passive expandable footer ── */
 .ace-qol-effects-passive-toggle {
   padding: 6px 10px;
@@ -4775,68 +4838,6 @@
   box-shadow: 0 0 6px rgba(255, 80, 80, 0.4);
 }
 .ace-qol-save-phase1-remove i { pointer-events: none; }
-
-/* ─── Attack card: chevron toggle + expandable item details ─────────────── */
-.ace-qol-atk-info-toggle {
-  background: transparent;
-  border: 1px solid rgba(212, 175, 55, 0.35);
-  color: #d4af37;
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  cursor: pointer;
-  margin-left: 6px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s ease;
-  font-size: 11px;
-}
-.ace-qol-atk-info-toggle:hover {
-  background: rgba(212, 175, 55, 0.15);
-  border-color: rgba(212, 175, 55, 0.7);
-  box-shadow: 0 0 6px rgba(212, 175, 55, 0.4);
-}
-.ace-qol-atk-info-toggle i {
-  pointer-events: none;
-}
-.ace-qol-atk-item-details {
-  border-top: 1px solid rgba(212, 175, 55, 0.25);
-  border-bottom: 1px solid rgba(212, 175, 55, 0.25);
-  background: rgba(10, 10, 12, 0.4);
-  padding: 10px 12px;
-  margin: 6px 0;
-  font-size: 12px;
-  line-height: 1.45;
-  color: #d8d8d8;
-  max-height: 360px;
-  overflow-y: auto;
-}
-.ace-qol-atk-item-details.ace-qol-collapsed { display: none !important; }
-.ace-qol-atk-itemdesc p { margin: 0 0 6px 0; }
-.ace-qol-atk-itemdesc strong { color: #d4af37; }
-.ace-qol-atk-itemdesc em { color: #b8b8b8; }
-.ace-qol-atk-itemtags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed rgba(212, 175, 55, 0.2);
-}
-.ace-qol-atk-itemtag {
-  display: inline-block;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  padding: 2px 7px;
-  border: 1px solid rgba(212, 175, 55, 0.4);
-  border-radius: 3px;
-  color: #d4af37;
-  background: rgba(212, 175, 55, 0.06);
-  text-transform: uppercase;
-}
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  HEAL PIPELINE — Card + Target Picker
@@ -4945,7 +4946,7 @@
   border-color: rgba(92,242,138,0.3);
 }
 .ace-qol-heal-card-target-img {
-  width: 32px; height: 32px; border-radius: 50%;
+  width: 32px; height: 32px; border-radius: 4px;
   border: 1px solid rgba(212,175,55,0.3); flex: 0 0 auto;
 }
 .ace-qol-heal-card-target-info {
@@ -5355,7 +5356,7 @@
 .ace-qol-rs-dc { color: #c8c8c8; font-size: 1.1em; }
 .ace-qol-rs-result { margin-left: auto; padding: 7px 16px; border-radius: 6px; font-weight: 800; font-size: 1.1em; letter-spacing: 0.8px; }
 .ace-qol-rs-pass { background: #1f5d2e; color: #8dffb5; border: 1px solid #5cf28a; }
-.ace-qol-rs-fail { background: #5d1f1f; color: #ff9a9a; border: 1px solid #f25c5c; }
+.ace-qol-rs-fail { background: #5d1f1f; color: #ff1744; border: 1px solid #f25c5c; }
 .ace-qol-rs-petrified { background: #7a1414; color: #ffb3b3; border: 1px solid #ff5c5c; box-shadow: 0 0 8px rgba(255,60,60,0.35); }
 .ace-qol-rs-outcome { color: #e4e4e4; font-size: 1.05em; line-height: 1.35; }
 .ace-qol-rs-outcome b { color: #f5df8f; font-weight: 700; }
@@ -6889,14 +6890,17 @@ i.ace-douse-tool::after {
   display: flex; flex-direction: column; gap: 2px;
   min-width: 0; flex: 1 1 140px;
 }
+/* The header words are ACE's bright header gold (his table, 2026-10-14: "it
+   should be a lot brighter yellow"), not the frame's darker gold, at the heading
+   size, carved by the shared slate rule at the end of this file. */
 .ace-qol-regen-card .ace-qol-ot-name {
-  color: #d4af37; font-size: 17px; font-weight: 700;
-  white-space: normal; overflow-wrap: anywhere;
+  color: #f5d060; font-size: 20px; font-weight: 700;
+  white-space: normal; overflow-wrap: normal;
 }
 .ace-qol-regen-card .ace-qol-ot-label,
 .ace-qol-regen-card .ace-qol-ot-timing {
-  color: #d4af37; font-size: 15px;
-  white-space: normal; overflow-wrap: anywhere;
+  color: #f5d060; font-size: 17px;
+  white-space: normal; overflow-wrap: normal;
 }
 
 /* "Should regain" in gold; the number and its unit in green, as one thing. */
@@ -7710,3 +7714,169 @@ img.ace-face { object-fit: cover !important; object-position: 50% 0 !important; 
   text-underline-offset: 2px;
 }
 .ace-perceived-note .ace-perceived-token:hover { color: #fff3c4; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE SLATE: EVERY ACE CARD'S HEADER, AND ITS EDGE (his rule, 2026-10-12)
+
+     "The dice-tray roll is the look. The Dungeon Master card, the one that says
+     1d12, already has it: a gray slate texture behind the header, and a thin
+     dark gold edge. Do not draw a new texture and do not guess a file... Put
+     that texture on every ACE header... The black body of the card stays black.
+     The words stay as they are. The cream frame around the outside goes. The
+     outer edge of every ACE card uses that same thin dark gold line, with the
+     slate in the margin... Every card, not one type." And the header lettering,
+     same colours, "engraved into the stone".
+
+   PROVEN, NOT DRAWN. The slate on that 1d12 card is dnd5e's own
+   ui/texture-gray1.webp (1000×600), which dnd5e lays over the top-left of every
+   chat message (dnd5e.css, Chat Cards, `.message::before`). ACE's skin of
+   2026-10-01 put that roll card on black, and on black the stone shows. Its edge
+   is Foundry's own 1px line in --chat-message-border-color (#6f6c66).
+
+   So an ACE card takes the skinned roll card's ground (black, so dnd5e's own
+   stone shows in the margin), the same edge, and every card header carries the
+   same file from its top-left corner, over the same black.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.chat-message[data-ace-card="1"] {
+  --chat-message-background: #0e0e10;
+  background: #0e0e10 !important;
+  border: 1px solid var(--chat-message-border-color, #6f6c66);
+  color: #e8e6e0;
+}
+.chat-message[data-ace-skin="1"] {
+  border-color: var(--chat-message-border-color, #6f6c66);
+}
+
+.chat-message[data-ace-card="1"] :is(
+  .ace-qol-save-cast-line, .ace-qol-dmg-header, .ace-qol-atk-header, .ace-qol-merge-header,
+  .ace-qol-ot-header, .ace-qol-tx-header, .ace-qol-pst-header, .ace-qol-loot-header,
+  .ace-qol-tile-loot-header, .ace-qol-poly-header, .ace-qol-use-header, .ace-qol-reaction-header,
+  .forge-trap-header, .forge-disarm-header, .forge-disarm-result-header, .forge-spot-header,
+  .ace-qol-card-head
+) {
+  background: url("../../../systems/dnd5e/ui/texture-gray1.webp") no-repeat left top, #0e0e10 !important;
+  /* ⚠️ CUT INTO THE STONE (his rule, 2026-10-13: "Carve it into the slate by
+     putting more black around the letters themselves, so they sit down in the
+     stone... No box behind the words."), and 2026-10-14: "each letter is carved
+     into the stone behind it." A soft black shadow UNDER a letter lifts it off
+     the stone, which is what the first carving did. A cut is the other way
+     round: the light comes from above, so the upper inside wall of each stroke
+     is in shadow (dark above and to the left of the letter) and the lower lip
+     catches the light (a thin bright line below). A tight black edge keeps the
+     strokes crisp. Each word keeps its own colour; gold is the bright gold. */
+  text-shadow:
+    0 0 1px rgba(0, 0, 0, 0.9),
+    0 -1px 0 rgba(0, 0, 0, 0.95),
+    -1px -1px 0 rgba(0, 0, 0, 0.6),
+    0 1px 0 rgba(255, 255, 255, 0.32),
+    1px 1px 0 rgba(255, 255, 255, 0.12);
+}
+/* ⚠️ A HEADER USES THE WIDTH IT HAS AND WRAPS ON A WORD (his standing rule,
+   2026-10-13: "It is never stacked down a narrow column, and a word is never
+   split"). */
+.chat-message[data-ace-card="1"] :is(
+  .ace-qol-save-cast-line, .ace-qol-dmg-header, .ace-qol-atk-header, .ace-qol-merge-header,
+  .ace-qol-ot-header, .ace-qol-tx-header, .ace-qol-pst-header, .ace-qol-loot-header,
+  .ace-qol-tile-loot-header, .ace-qol-poly-header, .ace-qol-use-header, .ace-qol-reaction-header,
+  .forge-trap-header, .forge-disarm-header, .forge-disarm-result-header, .forge-spot-header,
+  .ace-qol-card-head
+) :is(strong, span, div, a) {
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: manual;
+}
+/* Brighter gold: ACE's own bright gold, the top of its gold gradient. The names
+   painted with that gradient take it as a solid, so the black edge sits on the
+   letters and not behind them. */
+.chat-message[data-ace-card="1"] :is(.ace-qol-atk-item-name, .ace-qol-save-cast-dc) {
+  color: #f5d060;
+}
+.chat-message[data-ace-card="1"] :is(.ace-qol-dmg-item-name, .ace-qol-merge-item-name) {
+  background: none;
+  color: #f5d060;
+  -webkit-text-fill-color: #f5d060;
+}
+/* ADV and why it was rolled that way: under the portrait, keeping their green,
+   and not carved (his rule: "Not the green ADV treatment"). */
+.ace-qol-atk-head-why {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.ace-qol-atk-head-why, .ace-qol-atk-head-why * { text-shadow: none; }
+/* The dice-tray card's own header lettering, cut the same way. */
+.chat-message[data-ace-skin="1"] > .message-header {
+  text-shadow: 0 0 1px #000, 0 0 2px #000, 0 1px 3px rgba(0, 0, 0, 0.95),
+    0 -1px 0 rgba(0, 0, 0, 0.9), 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+
+/* ⚠️ THE HEADER PORTRAIT SITS IN THE STONE (his rule, 2026-10-13: "recessed, not
+   a picture lying on top of it. The cast card's header portrait gets the same.
+   Portraits in the black body stay as they are."). The well is the hole: its
+   inner shadow falls over the picture's edges from above, a black rim holds it,
+   and the stone's lower lip catches the light. Only header portraits have one. */
+.ace-qol-head-well {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  line-height: 0;
+  border-radius: 6px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12), 0 -1px 0 rgba(0, 0, 0, 0.7);
+}
+.ace-qol-head-well > img, .ace-qol-head-well > span {
+  border: none !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+}
+.ace-qol-head-well::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  pointer-events: none;
+  box-shadow: inset 0 3px 7px rgba(0, 0, 0, 0.9), inset 0 0 0 1px rgba(0, 0, 0, 0.85),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.14);
+}
+
+/* ⚠️ EVERY ACE CARD'S FRAME IS THE ATTACK CARD'S GOLD LINE (his rule, 2026-10-13:
+   "every ACE card uses the attack card's gold line... Do not pick a new gold").
+   The attack card's own: 1px #d4af37, 4px corners. A card inside another card
+   keeps no second frame. */
+.chat-message :is(.ace-qol-attack-card, .ace-qol-save-card, .ace-qol-save-results-card,
+  .ace-qol-damage-card, .ace-qol-merge-card, .ace-qol-loot-card, .ace-qol-pc-save-card,
+  .ace-qol-save-pc-result-card, .ace-qol-xp-card, .ace-qol-heal-card, .ace-qol-poly-card,
+  .ace-qol-transform-card, .ace-qol-use-card, .ace-qol-regen-card, .ace-qol-escape-card,
+  .ace-qol-card, .forge-trap-card, .forge-spot-card, .forge-disarm-card, .forge-warn-card,
+  .forge-pit-card):not(:is(.ace-qol-attack-card, .ace-qol-save-card, .ace-qol-save-results-card,
+  .ace-qol-damage-card, .ace-qol-merge-card, .ace-qol-loot-card, .ace-qol-pc-save-card,
+  .ace-qol-save-pc-result-card, .ace-qol-xp-card, .ace-qol-heal-card, .ace-qol-poly-card,
+  .ace-qol-transform-card, .ace-qol-use-card, .ace-qol-regen-card, .ace-qol-escape-card,
+  .ace-qol-card, .forge-trap-card, .forge-spot-card, .forge-disarm-card, .forge-warn-card,
+  .forge-pit-card) *) {
+  border: 1px solid #d4af37 !important;
+  border-image: none !important;
+  border-radius: 4px !important;
+}
+
+/* ═══ EVERY AC AND EVERY DC IN ORANGE, A SMALL "vs" BEFORE IT (his rule, 2026-10-13) ═══
+   "bright orange, more orange than yellow. Not blue... The 'vs' is smaller than
+   the number." ACE's own bright orange (#ff9100). chat-render-utils.mjs
+   (dressACsAndDCs) writes the "vs" and the number into every marked AC and DC. */
+:is(.ace-qol-ac, .ace-qol-dc, .ace-qol-save-dc, .ace-qol-save-cast-dc, .ace-qol-atk-ac,
+  .ace-qol-merge-tgt-ac, .ace-qol-escape-dc) {
+  color: #ff9100 !important;
+}
+.ace-qol-num {
+  color: #ff9100 !important;
+  font-weight: 700;
+}
+.ace-qol-vs {
+  color: #ff9100 !important;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+/* MISS and FAIL are always red: the save card's FAIL red. */
+:is(.ace-qol-save-fail, .ace-qol-miss, .ace-qol-result-miss) { color: #ff1744 !important; }
