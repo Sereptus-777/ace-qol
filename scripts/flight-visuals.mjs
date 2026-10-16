@@ -126,6 +126,12 @@ export class FlightVisuals {
     // for the Stormforger staff AND any homebrew "Fly"/"Land" ability.
     Hooks.on("dnd5e.postUseActivity", async (activity, _usageConfig, _results) => {
       try {
+        // A countered Fly or Levitate lifts nobody (2026-10-16).
+        const { ReactionEngine } = await import("./reaction-engine.mjs");
+        if (await ReactionEngine.spellWasCountered(activity)) {
+          console.log(`${MODULE_ID} | ${activity?.item?.name} was counterspelled, so nobody is lifted.`);
+          return;
+        }
         // NO activeGM gate. `postUseActivity` fires ONLY on the client that used
         // the item — for a player-owned character that is the PLAYER, so gating
         // to the GM meant nothing ran at all when Alex used the staff (live,

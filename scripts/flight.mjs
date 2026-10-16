@@ -346,10 +346,16 @@ export class FlightControl {
     // ⚠️ A FLAG, NOT A NAME. Any item carrying `flightControl` asks for a height
     // when it is used, so the dark gift, a potion of flying and a homebrew broom
     // all work without a line of code each.
-    Hooks.on("dnd5e.postUseActivity", (activity) => {
+    Hooks.on("dnd5e.postUseActivity", async (activity) => {
       try {
         const item = activity?.item;
         if (item?.getFlag?.(MODULE_ID, "flightControl") !== true) return;
+        // A countered spell carrying this mark lifts nobody (2026-10-16).
+        const { ReactionEngine } = await import("./reaction-engine.mjs");
+        if (await ReactionEngine.spellWasCountered(activity)) {
+          console.log(`${LOG} | ${item.name} was counterspelled, so nobody is lifted.`);
+          return;
+        }
         const token = item.actor?.getActiveTokens?.()?.[0];
         if (!token) {
           ui.notifications?.warn(`${item.actor?.name ?? "That creature"} has no token on this scene, `

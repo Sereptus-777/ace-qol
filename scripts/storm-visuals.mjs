@@ -191,10 +191,18 @@ export class StormVisuals {
 
   static init() {
     Hooks.on("dnd5e.postUseActivity", (activity, _usageConfig, results) => {
-      StormVisuals._maybePlay(activity, results).catch(err =>
-        console.warn(`${MODULE_ID} | storm visual failed (non-fatal):`, err));
-      StormVisuals._maybeTornado(activity).catch(err =>
-        console.warn(`${MODULE_ID} | tornado visual failed (non-fatal):`, err));
+      (async () => {
+        // A countered storm spell plays no storm (2026-10-16).
+        const { ReactionEngine } = await import("./reaction-engine.mjs");
+        if (await ReactionEngine.spellWasCountered(activity)) {
+          console.debug(`${MODULE_ID} | ${activity?.item?.name} was counterspelled, so no storm or whirlwind plays.`);
+          return;
+        }
+        StormVisuals._maybePlay(activity, results).catch(err =>
+          console.warn(`${MODULE_ID} | storm visual failed (non-fatal):`, err));
+        StormVisuals._maybeTornado(activity).catch(err =>
+          console.warn(`${MODULE_ID} | tornado visual failed (non-fatal):`, err));
+      })().catch(err => console.warn(`${MODULE_ID} | storm visuals could not ask about Counterspell:`, err));
     });
     // Warm the asset probes so the first cast doesn't pay for them.
     Hooks.once("ready", () => {

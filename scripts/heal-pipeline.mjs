@@ -962,10 +962,9 @@ export class HealPipeline {
     // never asked. Every heal card is made here, so this is the one door. The
     // slot is already spent by now, which is the rule: a countered spell's slot
     // is still used.
-    if (item?.type === "spell" && Number(item.system?.level) > 0) {
+    {
       const { ReactionEngine } = await import("./reaction-engine.mjs");
-      const decision = await ReactionEngine.awaitCastDecision(activity, { item, actor });
-      if (decision?.abort) {
+      if (await ReactionEngine.spellWasCountered(activity, { item, actor })) {
         console.log(`${MODULE_ID} | HealPipeline: ${actor?.name}'s ${item.name} was counterspelled, `
           + "so nothing is healed and no heal card is posted. The slot stays spent.");
         return;

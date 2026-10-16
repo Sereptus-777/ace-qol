@@ -982,10 +982,9 @@ export class AttackPipeline {
     // Cure Wounds: the attack pipeline was one of the paths that never asked,
     // so a countered Guiding Bolt or Scorching Ray still posted its hit and its
     // damage. The same one wait every other spell path uses.
-    if (item.type === "spell" && Number(item.system?.level) > 0) {
+    {
       const { ReactionEngine } = await import("./reaction-engine.mjs");
-      const decision = await ReactionEngine.awaitCastDecision(subject, { item, actor });
-      if (decision?.abort) {
+      if (await ReactionEngine.spellWasCountered(subject, { item, actor })) {
         console.log(`${MODULE_ID} | ${actor.name}'s ${item.name} was counterspelled: no hit, no damage, no card.`);
         _announceAttackCancelled(item, actor, "it was counterspelled");
         return;

@@ -716,6 +716,22 @@ export class ReactionEngine {
    * @param {object|string} activityOrUuid  an activity, or an activity uuid
    * @returns {Promise<{abort: boolean, reason: string}>}
    */
+  /**
+   * ⚠️🔴 THE ONE QUESTION EVERY SPELL PATH ASKS (2026-10-16): was this cast
+   * counterspelled? Waits for the verdict if it is still being decided. Only a
+   * levelled spell can be countered; anything else answers no at once. Heals,
+   * spell attacks, Spiritual Weapon, Fly and Levitate, flight items, storm
+   * visuals and Prismatic Wall never asked, and a countered Cure Wounds healed.
+   * @returns {Promise<boolean>} true when the cast was countered
+   */
+  static async spellWasCountered(activityOrUuid, { item = null, actor = null } = {}) {
+    const it = item ?? activityOrUuid?.item ?? null;
+    if (!it || it.type !== "spell" || !(Number(it.system?.level) > 0)) return false;
+    const decision = await ReactionEngine.awaitCastDecision(activityOrUuid,
+      { item: it, actor: actor ?? it.actor ?? null });
+    return decision?.abort === true;
+  }
+
   static async awaitCastDecision(activityOrUuid, what = {}) {
     const isText = typeof activityOrUuid === "string";
     const uuid = isText ? activityOrUuid : (activityOrUuid?.uuid ?? null);

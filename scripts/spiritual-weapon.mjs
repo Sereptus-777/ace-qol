@@ -472,8 +472,7 @@ export const SpiritualWeapon = {
     // A countered cast places no weapon (2026-10-16): the same wait every spell
     // path uses. dnd5e's own summon path is cleaned up by the counter's kill-list.
     const { ReactionEngine } = await import("./reaction-engine.mjs");
-    const decision = await ReactionEngine.awaitCastDecision(activity, { item, actor: caster });
-    if (decision?.abort) {
+    if (await ReactionEngine.spellWasCountered(activity, { item, actor: caster })) {
       say(`${caster?.name}'s ${item.name} was counterspelled, so no weapon is placed.`);
       return;
     }

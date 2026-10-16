@@ -263,6 +263,12 @@ export class PrismaticWallEngine {
     if (userId !== game.user?.id) return;
     const item = this._itemOf(doc);
     if (!item || !isPrismaticWall(item)) return;   // SILENT-OK: not this spell
+    // A countered wall asks nobody anything; the counter takes it away (2026-10-16).
+    const { ReactionEngine } = await import("./reaction-engine.mjs");
+    if (await ReactionEngine.spellWasCountered(String(doc?.flags?.dnd5e?.origin ?? "") || item.uuid, { item })) {
+      console.log(`${TAG}: ${item.name} was counterspelled, so nobody is asked who passes it.`);
+      return;
+    }
     // ⚠️ THE RULE FIRST, THEN THE QUESTION. A wall that ends the instant it is
     // placed has nobody to spare, so the caster is not asked.
     const inTheWay = this._creaturesInTheWall(doc);

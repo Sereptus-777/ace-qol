@@ -36,15 +36,23 @@ check("the caster's own screen raises the Counterspell hold, a player's included
 const qol = src(`${QOL}ace-qol.mjs`);
 check("the GM's verdict lets the player's hold go",
   /if \(act && !game\.user\.isGM\) ReactionEngine\._resolveCastBarrier\(act, payload\.result \?\? \{ abort: false \}\);/.test(qol));
+check("one question for every spell path: levelled spells only, waiting for the verdict",
+  /static async spellWasCountered\(activityOrUuid, \{ item = null, actor = null \} = \{\}\) \{[\s\S]{0,300}?Number\(it\.system\?\.level\) > 0[\s\S]{0,200}?awaitCastDecision\(/.test(re));
 const heal = src(`${QOL}heal-pipeline.mjs`);
 const healDoor = heal.slice(heal.indexOf("async _rollAndPostCard("), heal.indexOf("async _rollAndPostCard(") + 1600);
-check("every heal card waits for the verdict before a die is thrown",
-  /awaitCastDecision\(activity, \{ item, actor \}\)/.test(healDoor) && healDoor.indexOf("awaitCastDecision") < healDoor.indexOf("Build the heal Roll"));
-check("a countered heal posts no card", /if \(decision\?\.abort\) \{[\s\S]{0,300}?return;/.test(healDoor));
-const atk = src(`${QOL}attack-pipeline.mjs`);
-check("a spell attack waits for the verdict", /awaitCastDecision\(subject, \{ item, actor \}\)/.test(atk));
-const sw = src(`${QOL}spiritual-weapon.mjs`);
-check("Spiritual Weapon places nothing when countered", /awaitCastDecision\(activity, \{ item, actor: caster \}\)/.test(sw));
+check("every heal card asks before a die is thrown, and a countered heal posts nothing",
+  /if \(await ReactionEngine\.spellWasCountered\(activity, \{ item, actor \}\)\) \{[\s\S]{0,300}?return;/.test(healDoor)
+  && healDoor.indexOf("spellWasCountered") < healDoor.indexOf("Build the heal Roll"));
+// The audit of 2026-10-16: every path that acts on a spell and had never asked.
+const asks = {
+  "a spell attack": [`${QOL}attack-pipeline.mjs`, /spellWasCountered\(subject, \{ item, actor \}\)/],
+  "Spiritual Weapon's placement": [`${QOL}spiritual-weapon.mjs`, /spellWasCountered\(activity, \{ item, actor: caster \}\)/],
+  "Fly and Levitate lifting anyone": [`${QOL}flight-visuals.mjs`, /if \(await ReactionEngine\.spellWasCountered\(activity\)\) \{/],
+  "a flight-control item lifting anyone": [`${QOL}flight.mjs`, /if \(await ReactionEngine\.spellWasCountered\(activity\)\) \{/],
+  "the storm and whirlwind visuals": [`${QOL}storm-visuals.mjs`, /if \(await ReactionEngine\.spellWasCountered\(activity\)\) \{/],
+  "Prismatic Wall asking who passes": [`${QOL}prismatic-wall-engine.mjs`, /ReactionEngine\.spellWasCountered\(String\(doc\?\.flags\?\.dnd5e\?\.origin/],
+};
+for (const [what, [file, rx]] of Object.entries(asks)) check(`${what} asks whether the spell was countered`, rx.test(src(file)));
 
 // ── NPCs never shown to the players ──
 const hook = qol.slice(qol.indexOf('Hooks.on("preCreateCombatant", (combatant, data) => {'), qol.indexOf("async function _hideNpcCombatantsAlreadyInFights"));
