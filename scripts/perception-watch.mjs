@@ -47,6 +47,15 @@ import { popupDing } from "./popup-ding.mjs";
 import { awaitDiceSettle } from "./dsn-utils.mjs";
 import { aceToolOrder } from "./token-tools-order.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
+// The one answer to "who decides for this creature": its connected player, else the GM.
+import { whoAnswers } from "./who-answers.mjs";
+
+/* The "comes upon a fight" question is answered on the PLAYER's screen, so every
+   screen registers it, at init, before any GM can ask (Foundry's user query). */
+Hooks.once("init", () => {
+  CONFIG.queries ??= {};
+  CONFIG.queries["ace-qol.comesUponFight"] = (data) => PerceptionWatch._comesUponQuery(data);
+});
 
 /** Footsteps carry this far, edge to edge: the same measure the auras use. */
 const HEARING_FT = 30;
@@ -352,6 +361,28 @@ export class PerceptionWatch {
     return game.users?.activeGM === game.user;
   }
 
+  /**
+   * ⚠️🔴 THE FIGHT ON THIS TOKEN'S OWN SCENE (2026-10-16). This read
+   * `game.combat`, which is the fight on whatever scene the GM's screen is
+   * SHOWING. A started fight on the token's scene counts: the active one first,
+   * otherwise the most recently changed one, which is how Foundry itself picks
+   * the fight it shows. A fight he is running stays a fight even when Foundry
+   * has not marked it active.
+   */
+  static _fightOn(scene) {
+    if (!scene) return null;
+    const here = (game.combats?.contents ?? [])
+      .filter(c => c.started && (c.scene === null || c.scene?.id === scene.id));
+    if (!here.length) return null;
+    return here.find(c => c.active)
+      ?? [...here].sort((a, b) => (b._stats?.modifiedTime ?? 0) - (a._stats?.modifiedTime ?? 0))[0];
+  }
+
+  /** A player character in this fight? */
+  static _inFight(fight, tokenDoc) {
+    return !!fight?.combatants?.some(c => c.tokenId === tokenDoc?.id);
+  }
+
   /** Every player-owned token on the scene, and every hostile creature. */
   static _sides(scene) {
     const tokens = (scene?.tokens?.contents ?? []).filter(t => t.actor);
@@ -381,7 +412,11 @@ export class PerceptionWatch {
     /* ⚠️ ONCE THE FIGHT IS ON, NOBODY IS ASKED (his rule, 2026-10-05). A
        creature that can see somebody already fighting is simply added and rolled,
        with one line in the GM's chat. No popup, no pause, no hop. */
-    if (game.combat?.started) return PerceptionWatch._joinFight(scene, { at, moved: tokenDoc });
+    const fight = PerceptionWatch._fightOn(scene);
+    if (fight) {
+      await PerceptionWatch._joinFight(scene, { at, moved: tokenDoc });
+      return PerceptionWatch._comesUpon(scene, fight, { at, moved: tokenDoc });
+    }
 
     const { pcs, foes } = PerceptionWatch._sides(scene);
 
@@ -398,7 +433,11 @@ export class PerceptionWatch {
   static async _afterDoor(wallDoc) {
     if (!PerceptionWatch._onDuty()) return;
     const scene = wallDoc?.parent ?? canvas?.scene;
-    if (game.combat?.started) return PerceptionWatch._joinFight(scene, {});
+    const fight = PerceptionWatch._fightOn(scene);
+    if (fight) {
+      await PerceptionWatch._joinFight(scene, {});
+      return PerceptionWatch._comesUpon(scene, fight, {});
+    }
     const { pcs, foes } = PerceptionWatch._sides(scene);
     if (!pcs.length || !foes.length) return;
     console.log(`${LOG} | a door changed state, so ${foes.length} creature(s) and `
@@ -593,6 +632,208 @@ export class PerceptionWatch {
     const x = (at?.x ?? tokenDoc.x) + (Number(tokenDoc.width) || 1) * grid / 2;
     const y = (at?.y ?? tokenDoc.y) + (Number(tokenDoc.height) || 1) * grid / 2;
     return { x, y };
+  }
+
+  /* ═══ A player character comes upon a fight ═════════════════════════════ */
+  //
+  // ⚠️🔴 HIS DESIGN, 2026-10-16. A fight is running on this scene and a player
+  // character who is NOT in it sees or hears part of it, or is seen by hostile
+  // creatures who are not in it either (Firaxis walking into a room of ten
+  // monsters while the temple fight ran: nothing happened at all). The choice
+  // is the PLAYER's, not the GM's: Wait, Ready, Join, and, while the fight is
+  // NPCs only, Talk to one of them. The pop-up goes to that character's
+  // connected player, else the GM. Nothing rolls for anybody but a character
+  // whose player pressed Join, and his own player rolls it. No pause: the
+  // round clock is already running.
+
+  static QUERY = "ace-qol.comesUponFight";
+
+  /** The active GM looks, for every player character not yet in this fight. */
+  static async _comesUpon(scene, fight, { at = null, moved = null } = {}) {
+    if (!scene || !fight) return;
+    let asked = new Set(fight.getFlag?.(MODULE_ID, "comesUponAsked") ?? []);
+    const { pcs, foes } = PerceptionWatch._sides(scene);
+    const npcsInFight = fight.combatants.map(c => c.token).filter(t => t?.actor && !t.actor.hasPlayerOwner);
+    const npcOnly = !fight.combatants.some(c => c.token?.actor?.hasPlayerOwner);
+    const where = (doc) => (moved?.id === doc.id ? at : null);
+
+    for (const pc of pcs) {
+      if (PerceptionWatch._inFight(fight, pc) || asked.has(pc.id) || !PerceptionWatch._awake(pc)) continue;
+      const seen = [], heard = [];
+      for (const npc of npcsInFight) {
+        if (!PerceptionWatch._awake(npc)) continue;
+        const ft = PerceptionWatch._feet(npc, pc, { pcAt: where(pc), foeAt: where(npc) });
+        if (PerceptionWatch._sees(pc, npc, ft).yes) seen.push(npc);
+        else if (PerceptionWatch._hears(npc, pc, ft, { pcAt: where(pc), foeAt: where(npc) }).yes) heard.push(npc);
+      }
+      // Hostile creatures who are not in the fight and can see him.
+      const spotters = foes.filter(f => !PerceptionWatch._inFight(fight, f)
+        && PerceptionWatch._sees(f, pc, PerceptionWatch._feet(f, pc, { pcAt: where(pc), foeAt: where(f) })).yes);
+      if (!seen.length && !heard.length && !spotters.length) continue;   // he knows nothing yet
+
+      asked.add(pc.id);
+      try { await fight.setFlag(MODULE_ID, "comesUponAsked", [...asked]); }
+      catch (err) { console.warn(`${LOG} | could not write that ${pc.name} was asked, so he may be asked again:`, err); }
+      asked = new Set(fight.getFlag?.(MODULE_ID, "comesUponAsked") ?? [...asked]);
+
+      PerceptionWatch._askPlayer({ scene, fight, pc, seen, heard, spotters, npcOnly })
+        .catch(err => console.warn(`${LOG} | ${pc.name} could not be asked about the fight:`, err));
+    }
+  }
+
+  /** Send the question to the player who answers for this character, and act on the answer. */
+  static async _askPlayer({ scene, fight, pc, seen, heard, spotters, npcOnly }) {
+    const names = (docs) => docs.map(d => d.name).join(", ");
+    const kind = seen.length ? "sees" : heard.length ? "hears" : "spotted";
+    const line = kind === "sees" ? `${pc.name} comes upon a fight: ${names(seen)}.`
+      : kind === "hears" ? `${pc.name} hears fighting nearby.`
+      : `${pc.name} has been seen by ${names(spotters)}.`;
+    const talkTo = npcOnly ? [...seen, ...heard] : [];
+    const data = {
+      sceneId: scene.id, pcTokenId: pc.id, line, kind,
+      talk: talkTo.map(t => ({ id: t.id, name: t.name, img: t.actor?.img ?? t.texture?.src ?? "" })),
+      faces: seen.slice(0, 6).map(t => ({ name: t.name, img: t.actor?.img ?? t.texture?.src ?? "" })),
+    };
+    const answerer = whoAnswers(pc.actor);
+    console.log(`${LOG} | ${line} Asking ${answerer?.user?.name ?? "the GM"}: Wait, Ready, Join${talkTo.length ? " or Talk" : ""}. `
+      + `(${answerer?.why ?? "no player could be found"})`);
+
+    let result = null;
+    try {
+      result = (answerer?.user && answerer.user.id !== game.user.id && answerer.user.active)
+        ? await answerer.user.query(PerceptionWatch.QUERY, data, { timeout: 10 * 60 * 1000 })
+        : await PerceptionWatch._comesUponQuery(data);
+    } catch (err) {
+      console.warn(`${LOG} | ${pc.name}'s player did not answer about the fight (${err?.message ?? err}), so nothing happened:`, err);
+      return;
+    }
+    const choice = result?.choice ?? "wait";
+    const talked = result?.talkTo ? scene.tokens.get(result.talkTo) : null;
+
+    // Join: the hostile creatures that saw him come into the same fight, rolled
+    // by this screen. His own initiative is his player's roll, already made.
+    if (choice === "join") {
+      for (const foe of spotters) await PerceptionWatch._addAndRoll(fight, foe);
+    }
+    const said = choice === "join" ? `${pc.name} joins the fight${spotters.length ? `, and so do ${names(spotters)}` : ""}.`
+      : choice === "ready" ? `${pc.name} readies an action and stays out of the fight for now.`
+      : choice === "talk" ? `${pc.name} speaks to ${talked?.name ?? "one of them"} before anything else.`
+      : `${pc.name} waits.`;
+    console.log(`${LOG} | ${said}`);
+    // The watcher's one GM line: the black ACE card, GM only.
+    await PerceptionWatch._gmLine(foundry.utils.escapeHTML(said));
+  }
+
+  /**
+   * The pop-up on the answering screen. Join rolls HIS initiative on his own
+   * screen (ACE routes a player's roll through the GM when it must); Talk opens
+   * a portrait picker of the NPCs he can see or hear, then ACE Engine's chat.
+   * @returns {Promise<{choice: string, talkTo?: string}>}
+   */
+  static async _comesUponQuery(data) {
+    const scene = game.scenes.get(data?.sceneId);
+    const pc = scene?.tokens?.get(data?.pcTokenId) ?? null;
+    if (!pc) return { choice: "wait" };
+    const esc = (s) => foundry.utils.escapeHTML(String(s ?? ""));
+    const faces = (data.faces ?? []).map(f => f.img
+      ? `<img class="ace-perceived-face ace-face" src="${esc(f.img)}" alt="" title="${esc(f.name)}" />` : "").join("");
+    const sub = data.kind === "sees" ? "Nobody has noticed you yet. What do you do?"
+      : data.kind === "hears" ? "Steel and shouting, close by. What do you do?"
+      : "They have seen you. What do you do?";
+    const content = `
+      <div class="ace-perceived">
+        <div class="ace-perceived-who">
+          ${pc.actor?.img ? `<img class="ace-perceived-face ace-face" src="${esc(pc.actor.img)}" alt="" />` : ""}
+          <div>
+            <div class="ace-perceived-line">${esc(data.line)}</div>
+            <div class="ace-perceived-sub">${sub}</div>
+          </div>
+        </div>
+        ${faces ? `<div class="ace-perceived-who">${faces}</div>` : ""}
+      </div>`;
+    const buttons = [
+      { action: "wait", label: "Wait" },
+      { action: "ready", label: "Ready" },
+      { action: "join", label: "Join the fight", default: true },
+    ];
+    if (data.talk?.length) buttons.push({ action: "talk", label: "Talk" });
+    let choice = "wait";
+    try {
+      try { popupDing(`${pc.name} comes upon a fight`); } catch (_) { /* a silent ding is not a bug */ }
+      choice = await foundry.applications.api.DialogV2.wait({
+        window: { title: `${pc.name} — a fight` },
+        classes: ["ace-perceived-dialog"],
+        position: { width: 540 },
+        content,
+        buttons,
+        rejectClose: false,
+      }) ?? "wait";
+    } catch (err) {
+      console.warn(`${LOG} | the fight pop-up could not open for ${pc.name}, so ${pc.name} waits:`, err);
+      return { choice: "wait" };
+    }
+
+    if (choice === "join") {
+      try {
+        await pc.actor?.rollInitiative?.({ createCombatants: true });
+        // Nothing lands before the dice: the answer goes back, and the GM's
+        // screen adds and announces, only once his initiative has landed.
+        await awaitDiceSettle(6000);
+      } catch (err) {
+        console.warn(`${LOG} | ${pc.name}'s initiative could not be rolled:`, err);
+        ui.notifications?.warn(`${pc.name} could not be added to the fight. Roll initiative from the token.`);
+      }
+      return { choice };
+    }
+    if (choice === "talk") {
+      const who = await PerceptionWatch._pickWhoToTalkTo(pc, data.talk);
+      if (!who) return { choice: "wait" };
+      const npcDoc = scene.tokens.get(who);
+      const api = game.modules.get("ace-engine")?.api;
+      if (!npcDoc || typeof api?.talkTo !== "function") {
+        ui.notifications?.warn("ACE Engine's NPC chat is not available, so nobody was spoken to.");
+        return { choice: "wait" };
+      }
+      api.talkTo(npcDoc, pc.object ?? null);
+      return { choice, talkTo: who };
+    }
+    return { choice };
+  }
+
+  /** The portrait picker: one NPC to speak to, or nobody. */
+  static async _pickWhoToTalkTo(pc, list) {
+    const esc = (s) => foundry.utils.escapeHTML(String(s ?? ""));
+    const content = `
+      <div class="ace-perceived">
+        <div class="ace-perceived-line">Who does ${esc(pc.name)} speak to?</div>
+        <div class="ace-perceived-who ace-perceived-pick-row">
+          ${(list ?? []).map(n => `
+            <button type="button" class="ace-perceived-pick" data-npc="${esc(n.id)}" title="${esc(n.name)}">
+              ${n.img ? `<img class="ace-perceived-face ace-face" src="${esc(n.img)}" alt="" />` : ""}
+              <span>${esc(n.name)}</span>
+            </button>`).join("")}
+        </div>
+      </div>`;
+    let picked = null;
+    try {
+      await foundry.applications.api.DialogV2.wait({
+        window: { title: `${pc.name} — speak to` },
+        classes: ["ace-perceived-dialog"],
+        position: { width: 540 },
+        content,
+        buttons: [{ action: "cancel", label: "Never mind" }],
+        rejectClose: false,
+        render: (_event, dialog) => {
+          dialog.element?.querySelectorAll(".ace-perceived-pick").forEach(b => b.addEventListener("click", () => {
+            picked = b.dataset.npc ?? null;
+            dialog.close();
+          }));
+        },
+      });
+    } catch (err) {
+      console.warn(`${LOG} | the portrait picker could not open:`, err);
+    }
+    return picked;
   }
 
   /* ═══ The popup ═══════════════════════════════════════════════════════════ */
@@ -906,7 +1147,7 @@ export class PerceptionWatch {
   }
 
   static async _joinPass(scene, { at = null, moved = null } = {}) {
-    const combat = game.combat;
+    const combat = PerceptionWatch._fightOn(scene);
     if (!scene || !combat?.started) return;
 
     // Who it would be fighting: the player tokens and anybody not hostile.

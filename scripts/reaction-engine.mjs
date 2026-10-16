@@ -1226,9 +1226,15 @@ export class ReactionEngine {
     // Fires EARLIER than postCreateUsageMessage. Other engines (Spell-
     // AutoDamage, etc.) await this barrier in their postCreateUsageMessage
     // handlers so reactions resolve modally before downstream effects.
+    // ⚠️🔴 ON THE CASTER'S OWN SCREEN, A PLAYER'S TOO (2026-10-16). This was
+    // GM-gated on the belief that every client sees this hook. It does not:
+    // dnd5e fires it only on the screen that pressed the button. So a PLAYER'S
+    // cast had no hold on the player's screen, which is where his heal, his
+    // buff and his summon resolve, and Firaxis's Cure Wounds posted its card
+    // before Vilnius's Counterspell was decided. The GM's screen still raises
+    // its own hold for a player's cast (playerSpellCast); the player's is let go
+    // by the GM's verdict relay ("summonVerdict" in ace-qol.mjs).
     Hooks.on("dnd5e.preUseActivity", (activity, usageConfig) => {
-      // SILENT-OK: GM-only handler; every client sees this hook and only the GM resolves it
-      if (!game.user.isGM) return;
         if (!QolSettings.get("enableReactions")) return this._gateOff("Counterspell", "enableReactions");
         if (!QolSettings.get("autoCounterspell")) return this._gateOff("Counterspell", "autoCounterspell");
       const item = activity?.item;

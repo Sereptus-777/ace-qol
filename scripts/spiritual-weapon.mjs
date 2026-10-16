@@ -469,6 +469,14 @@ export const SpiritualWeapon = {
       ui.notifications?.warn(`${item.name}: ${caster?.name ?? "the caster"} has no token on this scene, so there is nowhere to measure 60 feet from.`);
       return;
     }
+    // A countered cast places no weapon (2026-10-16): the same wait every spell
+    // path uses. dnd5e's own summon path is cleaned up by the counter's kill-list.
+    const { ReactionEngine } = await import("./reaction-engine.mjs");
+    const decision = await ReactionEngine.awaitCastDecision(activity, { item, actor: caster });
+    if (decision?.abort) {
+      say(`${caster?.name}'s ${item.name} was counterspelled, so no weapon is placed.`);
+      return;
+    }
     await SpiritualWeapon._endOld(item, "it was cast again");
 
     const rd = activity.getRollData?.() ?? {};

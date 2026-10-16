@@ -954,6 +954,24 @@ export class HealPipeline {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _rollAndPostCard(activity, actor, item, targets, classification, usageConfig = null, poolScale = null) {
+    // ⚠️🔴 A HEAL WAITS FOR COUNTERSPELL LIKE EVERY OTHER SPELL (his table,
+    // 2026-10-16). Firaxis cast Cure Wounds on Jeth: the +17 card posted at
+    // once, and Vilnius's Counterspell landed after it, saying the spell was
+    // unwoven while the heal card sat there with APPLY on it. The save engine,
+    // the spell pipeline and auto-damage all waited for the verdict; healing
+    // never asked. Every heal card is made here, so this is the one door. The
+    // slot is already spent by now, which is the rule: a countered spell's slot
+    // is still used.
+    if (item?.type === "spell" && Number(item.system?.level) > 0) {
+      const { ReactionEngine } = await import("./reaction-engine.mjs");
+      const decision = await ReactionEngine.awaitCastDecision(activity, { item, actor });
+      if (decision?.abort) {
+        console.log(`${MODULE_ID} | HealPipeline: ${actor?.name}'s ${item.name} was counterspelled, `
+          + "so nothing is healed and no heal card is posted. The slot stays spent.");
+        return;
+      }
+    }
+
     // Build the heal Roll directly from the activity's healing data.
     //
     // We do NOT call activity.rollDamage() because:

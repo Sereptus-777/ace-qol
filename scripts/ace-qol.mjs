@@ -1530,20 +1530,48 @@ Hooks.once("ready", () => {
 Hooks.on("preCreateCombatant", (combatant, data) => {
   try {
     if (!game.settings.get(MODULE_ID, "hideNpcInitiative")) return;
-    // Resolve actor — combatant.actor getter relies on actorId, which is
-    // not yet linked during preCreate. Read straight from the data payload.
-    const actorId = data?.actorId ?? combatant?.actorId;
-    if (!actorId) return;
-    const actor = game.actors.get(actorId);
-    if (!actor || actor.type !== "npc") return;
-    // Honor an explicit GM choice to show this NPC (e.g., they manually set
-    // hidden=false before creation). Otherwise hide by default.
-    if (data?.hidden === false) return;
+    // ⚠️🔴 HIS RULE, 2026-10-16: "The PCs should never, ever see the NPCs in
+    // the combat tracker. They only know their own turn order." An NPC may be
+    // waiting outside the door, in the order, and nobody should know it.
+    //
+    // This honoured `hidden: false` as "the GM chose to show it", and ACE's own
+    // add-to-combat code (Roll All NPCs, the perception popup) writes exactly
+    // that for every token visible on the map. So every NPC ACE added was shown,
+    // and Logan's screen had Vilnius and his initiative. Now anything no player
+    // owns is hidden, whoever adds it; the GM can still reveal one from the
+    // tracker afterwards. Read off the TOKEN's actor first: a summon's own token
+    // carries its caster's owners (Spiritual Weapon), the world actor does not.
+    const tokenDoc = (data?.sceneId && data?.tokenId)
+      ? (game.scenes.get(data.sceneId)?.tokens?.get(data.tokenId) ?? null) : null;
+    const actor = tokenDoc?.actor ?? game.actors.get(data?.actorId ?? combatant?.actorId);
+    if (!actor) return;
+    if (actor.hasPlayerOwner) return;             // the party, and what a player owns
     data.hidden = true;
   } catch (err) {
     console.warn(`${MODULE_ID} | Hidden NPC combatant hook failed (non-fatal):`, err);
   }
 });
+
+/**
+ * Fights already running when ACE loads were built while NPCs could be shown,
+ * so their NPCs are hidden now, once, by the active GM. Same rule as above:
+ * anything no player owns.
+ */
+async function _hideNpcCombatantsAlreadyInFights() {
+  if (game.users?.activeGM !== game.user) return;    // SILENT-OK: one GM writes
+  if (!game.settings.get(MODULE_ID, "hideNpcInitiative")) return;  // SILENT-OK: the GM shows NPCs
+  for (const combat of game.combats ?? []) {
+    const shown = combat.combatants.filter(c => !c.hidden && c.actor && !c.actor.hasPlayerOwner);
+    if (!shown.length) continue;
+    try {
+      await combat.updateEmbeddedDocuments("Combatant", shown.map(c => ({ _id: c.id, hidden: true })));
+      console.log(`${MODULE_ID} | hid ${shown.map(c => c.name).join(", ")} from the players in `
+        + `${combat.scene?.name ?? "a fight"}'s tracker: NPCs are never shown to players.`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not hide the NPCs already in ${combat.scene?.name ?? "a fight"}:`, err);
+    }
+  }
+}
 
 Hooks.on("preCreateChatMessage", (message, data) => {
   try {
@@ -3840,6 +3868,8 @@ Hooks.once("ready", () => {
   }
   // His portal fight arms itself, in a world that has one (world-portals.mjs).
   armWorldPortals().catch(err => console.error(`${MODULE_ID} | the portal fight could not arm:`, err));
+  // NPCs already in a running fight are hidden from the players (his rule, 2026-10-16).
+  _hideNpcCombatantsAlreadyInFights().catch(err => console.warn(`${MODULE_ID} | hiding NPCs in running fights failed:`, err));
 
   // Prismatic Wall — EVERY client: the caster's own screen asks who passes the
   // wall unharmed; the active GM's screen rolls for whoever comes near it or
@@ -5412,6 +5442,10 @@ Hooks.once("ready", () => {
         try {
           const act = payload.activityUuid ? await fromUuid(payload.activityUuid) : null;
           if (act) ReactionEngine._resolveSummonVerdict(act, payload.result ?? { abort: false });
+          // The caster's screen raised its own hold when it cast (reaction-engine,
+          // preUseActivity); this verdict is what lets it go, countered or not.
+          // Only the screen that cast holds one; every other screen finds none.
+          if (act && !game.user.isGM) ReactionEngine._resolveCastBarrier(act, payload.result ?? { abort: false });
         } catch (err) { console.warn(`${MODULE_ID} | summonVerdict handling failed (non-fatal):`, err); }
         return;
       }

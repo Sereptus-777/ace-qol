@@ -7606,6 +7606,32 @@ i.ace-douse-tool::after {
 .ace-perceived-dialog button[data-action="wait"]  { background: #2a2a30 !important; }
 .ace-perceived-dialog button[data-action="ready"] { background: #1f6b3a !important; }
 .ace-perceived-dialog button[data-action="roll"]  { background: #8d2a2a !important; }
+/* A player character comes upon a fight (2026-10-16): the same buttons, two more. */
+.ace-perceived-dialog button[data-action="join"]  { background: #8d2a2a !important; }
+.ace-perceived-dialog button[data-action="talk"]  { background: #2a4a6b !important; }
+.ace-perceived-dialog button[data-action="cancel"] { background: #2a2a30 !important; }
+/* Talk's portrait picker: each NPC is its face and name, the face framed as every face is. */
+.ace-perceived-pick-row { border-bottom: none; margin-top: 10px; }
+.ace-perceived-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  min-width: 96px;
+  height: auto;
+  padding: 8px;
+  background: #1a1612;
+  border: 1px solid #c6a15a;
+  border-radius: 6px;
+  color: #f3ead7;
+  font-size: 16px;
+  line-height: 1.25;
+  white-space: normal;
+  cursor: pointer;
+}
+.ace-perceived-pick:hover,
+.ace-perceived-pick:focus-visible { background: #2a2218; box-shadow: 0 0 8px rgba(212, 175, 55, 0.45); }
 
 /* The rest of the group on a sighting popup: who else is looking, by name. */
 .ace-perceived-also {

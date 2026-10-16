@@ -978,6 +978,20 @@ export class AttackPipeline {
     const actor = subject.actor;
     if (!item || !actor) return;
 
+    // ⚠️🔴 A SPELL ATTACK WAITS FOR COUNTERSPELL (2026-10-16). Found beside
+    // Cure Wounds: the attack pipeline was one of the paths that never asked,
+    // so a countered Guiding Bolt or Scorching Ray still posted its hit and its
+    // damage. The same one wait every other spell path uses.
+    if (item.type === "spell" && Number(item.system?.level) > 0) {
+      const { ReactionEngine } = await import("./reaction-engine.mjs");
+      const decision = await ReactionEngine.awaitCastDecision(subject, { item, actor });
+      if (decision?.abort) {
+        console.log(`${MODULE_ID} | ${actor.name}'s ${item.name} was counterspelled: no hit, no damage, no card.`);
+        _announceAttackCancelled(item, actor, "it was counterspelled");
+        return;
+      }
+    }
+
     // Check if auto-check hit is enabled
     if (!QolSettings.get("autoCheckHit")) {
       // ⚠️ RELEASE THE HOLD. Forge holds a weapon's FX from the moment the
