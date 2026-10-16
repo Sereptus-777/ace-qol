@@ -6059,6 +6059,9 @@ Hooks.once("ready", () => {
     // like a qol one. Optional-chained by callers — Forge must still work with
     // ace-qol absent, it just rolls without the 3D dice.
     dice: { show: safeShowForRoll, settle: (ms) => import("./dsn-utils.mjs").then(m => m.awaitDiceSettle(ms)) },
+    // The GM's Lock / Unlock Scene macro (2026-10-16): freeze every token on the
+    // scene, or let go of every hold on it, ACE's included.
+    sceneLock: { toggle: (scene) => PerceptionWatch.toggleSceneLock(scene) },
     // ⚠️ EDGE-TO-EDGE, SIZE- AND ELEVATION-AWARE. ace-engine has been calling
     // `game.aceQol.distanceFt` since it was written and silently falling back to
     // centre-to-centre every single time, because nobody ever exposed it. That

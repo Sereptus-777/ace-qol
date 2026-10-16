@@ -82,7 +82,14 @@ check("a quiet GM popup holds, and lets go when answered",
 check("the player's fight popup holds everybody else until he answers, and always lets go",
   /await PerceptionWatch\._hold\(scene, holdKey\);/.test(pw) && /\} finally \{\s*await PerceptionWatch\._release\(scene, holdKey\);/.test(pw));
 check("unpausing ends the sighting's hold only; an open question holds on",
-  /PerceptionWatch\._releaseSeen\(canvas\?\.scene\)/.test(pw) && /if \(!now\.open\.length && !now\.seen\) await PerceptionWatch\._unlock\(scene\);/.test(pw));
+  /PerceptionWatch\._releaseSeen\(canvas\?\.scene\)/.test(pw) && /if \(!now\.open\.length && !now\.seen && !now\.freeze\) await PerceptionWatch\._unlock\(scene\);/.test(pw));
+check("the GM's lock stops every token on the scene, an NPC's too, before anyone is let through",
+  lockHook.indexOf("lock?.freeze === true") > 0 && lockHook.indexOf("lock?.freeze === true") < lockHook.indexOf("if (game.user.isGM) return;"));
+check("no question answered lets go of the GM's lock; only he does",
+  /\{ seen: true, open: now\.open, freeze: now\.freeze \}/.test(pw) && /if \(!now\.open\.length && !now\.freeze\) return PerceptionWatch\._unlock\(scene\);/.test(pw));
+check("the macro's switch: anything holding the scene is let go, otherwise it is locked",
+  /static async toggleSceneLock\(scene = canvas\?\.scene\) \{[\s\S]{0,400}?if \(scene\.getFlag\?\.\(MODULE_ID, PerceptionWatch\.LOCK_FLAG\)\) \{\s*await PerceptionWatch\._unlock\(scene\);/.test(pw)
+  && /sceneLock: \{ toggle: \(scene\) => PerceptionWatch\.toggleSceneLock\(scene\) \}/.test(qol));
 check("a second GM screen loading cannot let go of a live hold",
   /if \(game\.users\?\.activeGM === game\.user\) \{\s*for \(const scene of \(game\.scenes \?\? \[\]\)\) \{\s*if \(!scene\.getFlag\?\.\(MODULE_ID, PerceptionWatch\.LOCK_FLAG\)\) continue;/.test(pw));
 

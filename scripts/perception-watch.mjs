@@ -177,6 +177,16 @@ export class PerceptionWatch {
       if (changes?.x === undefined && changes?.y === undefined) return;
       const lock = tokenDoc?.parent?.getFlag?.(MODULE_ID, PerceptionWatch.LOCK_FLAG);
       if (!lock) return;
+      // The GM's freeze (the Lock / Unlock Scene macro): nothing on this scene
+      // moves, a player's or an NPC's, whoever moves it, until he lets go.
+      if (lock?.freeze === true) {
+        try {
+          ui.notifications?.warn(game.user.isGM
+            ? `${tokenDoc.parent.name} is locked. Press Lock / Unlock Scene to let everyone move.`
+            : "Hold on: the GM has stopped all movement for a moment.");
+        } catch (_) { /* the move is refused either way */ }
+        return false;
+      }
       // SILENT-OK: the GM's own moves, and ACE's automatic ones, are never held
       if (game.user.isGM) return;
       if (!tokenDoc?.actor?.hasPlayerOwner) return;
@@ -360,7 +370,7 @@ export class PerceptionWatch {
   static async _lockDown(scene) {
     if (!scene || !game.user.isGM) return;
     const now = PerceptionWatch._lockState(scene);
-    try { await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, { seen: true, open: now.open }); }
+    try { await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, { seen: true, open: now.open, freeze: now.freeze }); }
     catch (err) { console.error(`${LOG} | the movement lock could not be set, so a drag `
       + `already in flight will land:`, err); }
   }
@@ -368,9 +378,29 @@ export class PerceptionWatch {
   /** The lock as it stands: was something seen (the paused kind), and which questions are open. */
   static _lockState(scene) {
     const raw = scene?.getFlag?.(MODULE_ID, PerceptionWatch.LOCK_FLAG);
-    if (!raw) return { seen: false, open: [] };
-    if (raw === true) return { seen: true, open: [] };
-    return { seen: raw.seen === true, open: Array.isArray(raw.open) ? [...raw.open] : [] };
+    if (!raw) return { seen: false, open: [], freeze: false };
+    if (raw === true) return { seen: true, open: [], freeze: false };
+    return { seen: raw.seen === true, open: Array.isArray(raw.open) ? [...raw.open] : [], freeze: raw.freeze === true };
+  }
+
+  /**
+   * The GM's own switch, the "Lock / Unlock Scene" macro (his ask, 2026-10-16:
+   * "in case something screws up here with this lock"). Anything holding this
+   * scene, ACE's hold or his freeze: let all of it go. Nothing holding it:
+   * freeze it, every token, a player's or an NPC's, whoever moves it.
+   */
+  static async toggleSceneLock(scene = canvas?.scene) {
+    if (!game.user?.isGM) { ui.notifications?.warn("Only the GM can lock or unlock the scene."); return null; }
+    if (!scene) { ui.notifications?.warn("There is no scene open to lock."); return null; }
+    if (scene.getFlag?.(MODULE_ID, PerceptionWatch.LOCK_FLAG)) {
+      await PerceptionWatch._unlock(scene);
+      ui.notifications?.info(`${scene.name}: unlocked. Everyone can move, and any ACE hold is cleared.`);
+      return "unlocked";
+    }
+    await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, { freeze: true, seen: false, open: [] });
+    console.log(`${LOG} | "${scene.name}" is locked by the GM: no token moves until it is unlocked.`);
+    ui.notifications?.info(`${scene.name}: locked. Nobody moves, players or NPCs, until you press it again.`);
+    return "locked";
   }
 
   /** Hold the players while one more question is open on this scene. */
@@ -387,8 +417,8 @@ export class PerceptionWatch {
     if (!scene || !game.user.isGM) return;
     const now = PerceptionWatch._lockState(scene);
     if (!now.seen) return;
-    if (!now.open.length) return PerceptionWatch._unlock(scene);
-    try { await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, { seen: false, open: now.open }); }
+    if (!now.open.length && !now.freeze) return PerceptionWatch._unlock(scene);
+    try { await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, { seen: false, open: now.open, freeze: now.freeze }); }
     catch (err) { console.warn(`${LOG} | could not end the sighting's hold:`, err); }
   }
 
@@ -398,7 +428,7 @@ export class PerceptionWatch {
     const now = PerceptionWatch._lockState(scene);
     now.open = now.open.filter(k => k !== key);
     try {
-      if (!now.open.length && !now.seen) await PerceptionWatch._unlock(scene);
+      if (!now.open.length && !now.seen && !now.freeze) await PerceptionWatch._unlock(scene);
       else await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, now);
     } catch (err) { console.warn(`${LOG} | could not let go of "${key}":`, err); }
   }
