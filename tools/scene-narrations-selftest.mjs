@@ -10,7 +10,9 @@
 //   • the region plays on the active GM only, for a player's token only, once,
 //     then switches itself off, and a party arriving together hears it once;
 //   • a narration plays before ACE's window has ever been opened;
-//   • the region type is declared, registered and labelled.
+//   • the region type is declared, registered and labelled;
+//   • each narration's voice is made once and kept as a file, and made again
+//     only when its words, voice or model change.
 //
 // Run: node tools/scene-narrations-selftest.mjs
 // ──────────────────────────────────────────────────────────────────────────────
@@ -105,7 +107,8 @@ check("with Players only off, anything walking in plays it", played.join("|") ==
 // ── The wiring ──
 const engine = src(`${ENGINE}ace-engine.mjs`);
 check("a narration plays before ACE's window was ever opened",
-  /function _narrate\(text\) \{\s*if \(!panel\) \{[\s\S]{0,300}?panel = _newPanel\(\);/.test(engine)
+  /function _narrate\(text, opts = \{\}\) \{\s*const p = _narrationPanel\(\);/.test(engine)
+  && /function _narrationPanel\(\) \{\s*if \(!panel\) \{[\s\S]{0,300}?panel = _newPanel\(\);/.test(engine)
   && /narrate:\s+\(text\) => _narrate\(text\)/.test(engine));
 check("only the active GM plays a saved narration",
   /async function _playNarration\([\s\S]{0,300}?if \(game\.users\?\.activeGM !== game\.user\) return false;/.test(engine));
@@ -139,6 +142,67 @@ check("the narrator and NPC speech both send under that one limit",
 check("the receiver refuses by the same limit", /const AUDIO_MAX_BYTES\s*=\s*AUDIO_SOCKET_MAX_B64;/.test(engine));
 check("too long for the voice sends words only when the GM chose the browser voice",
   /\} else if \(this\._browserVoiceChosen\(\)\) \{\s*\/\/[^\n]*\n\s*game\.socket\.emit\(`module\.\$\{MODULE_ID\}`, \{\s*type: "narration-tts"/.test(panel));
+
+// ── Made once, ahead of time (his ask, 2026-10-16: "a huge delay in narration") ──
+const bodyOf = (text, head) => {
+  const start = text.indexOf(head);
+  if (start < 0) return "";
+  let i = text.indexOf("{", start + head.length - 1), depth = 0, j = i;
+  for (; j < text.length; j++) { if (text[j] === "{") depth++; else if (text[j] === "}" && --depth === 0) break; }
+  return text.slice(i + 1, j);
+};
+const keyOf = new Function("text", bodyOf(panel, "  narrationAudioKey(text) {"));
+const voice = (model) => ({
+  _narratorVoice: (g) => ({ voiceId: g === "female" ? "her" : "him", modelId: model }),
+  _cleanForSpeech: (t) => t.trim(),
+});
+const turbo = voice("eleven_turbo_v2_5"), slow = voice("eleven_multilingual_v2");
+const k1 = keyOf.call(turbo, "The Temple of Lost Secrets is at war.");
+check("the same words in the same voice keep their recording", k1 === keyOf.call(turbo, "The Temple of Lost Secrets is at war.  "));
+check("changed words are made again", k1 !== keyOf.call(turbo, "The Temple of Lost Secrets is at peace."));
+check("a change of voice model is made again", k1 !== keyOf.call(slow, "The Temple of Lost Secrets is at war."));
+check("the female narrator tag is made in her voice", k1 !== keyOf.call(turbo, "[voice:female] The Temple of Lost Secrets is at war."));
+
+const { saveNarration, setNarrationAudio } = await import(`${ENGINE}narration-library.mjs`);
+const kept = {
+  name: "X5",
+  flags: { "ace-engine": { narrations: [
+    { id: "n1", title: "X5 entry", text: "Old words.", audio: "worlds/hijinx/ace-engine/narration-audio/s-n1-a.mp3", audioKey: "a" },
+  ] } },
+  async setFlag(_m, _k, list) { this.flags["ace-engine"].narrations = list; },
+};
+users.gm.isGM = true; me = "gm";
+globalThis.foundry.utils = { randomID: () => "new" };
+await saveNarration(kept, { title: "X5 entry", text: "Old words." });
+check("saving the same words again keeps the recording", kept.flags["ace-engine"].narrations[0].audio?.endsWith("s-n1-a.mp3"));
+await saveNarration(kept, { title: "x5 ENTRY", text: "New words." });
+check("new words under the same title drop the old recording",
+  kept.flags["ace-engine"].narrations[0].audio === null && kept.flags["ace-engine"].narrations[0].audioKey === null);
+await setNarrationAudio(kept, "n1", { audio: "worlds/hijinx/ace-engine/narration-audio/s-n1-b.mp3", audioKey: "b" });
+check("the made recording is kept on its narration", kept.flags["ace-engine"].narrations[0].audioKey === "b");
+
+const play = bodyOf(engine, "async function _playNarration(which, { scene } = {}) {");
+check("Play and the regions play the made recording, making it first if it is not",
+  /const audioSrc = await _ensureNarrationAudio\(where, entry\);\s*await _narrate\(entry\.text, audioSrc \? \{ audioSrc \} : \{\}\);/.test(play));
+const ensure = bodyOf(engine, "async function _ensureNarrationAudio(scene, entry) {");
+check("a failed upload is a failure, never a path guessed at",
+  /if \(!res\?\.path\) throw new Error/.test(ensure) && !/\$\{dir\}\/\$\{name\}/.test(ensure));
+check("a recording whose file has gone is made again", /fetch\(entry\.audio, \{ method: "HEAD" \}\)/.test(ensure));
+check("the same one asked for twice at once is one request", /_makingNarration\.has\(flight\)/.test(ensure));
+check("when it cannot be made, it is spoken live, not dropped",
+  /if \(audioSrc\) this\._playNarrationFile\(audioSrc\);\s*else this\._speakText\(text, voiceGender, \{ broadcast: true \}\);/.test(panel));
+const at = engine.indexOf('if (data?.type === "narration-file"');
+const recv = at < 0 ? "" : engine.slice(at, at + 900);
+check("the players play it from the world folder, sent by a GM only",
+  /if \(!sentByGM\(data\)\) return;/.test(recv)
+  && /startsWith\(`worlds\/\$\{game\.world\.id\}\/ace-engine\/narration-audio\/`\)/.test(recv)
+  && /_playNarrationFileHere\(data\.src, vol\);/.test(recv));
+check("Stop stops it on the players' screens",
+  /function _playNarrationFileHere\(src, volume = 0\.8\) \{[\s\S]{0,300}?_narrationAudio = audio;/.test(engine)
+  && /function _stopAllAudio\(\) \{\s*\/\/[^\n]*\n\s*if \(_narrationAudio\)/.test(engine));
+check("Save to Scene makes the one just saved, and Make Voices makes the rest",
+  /api\?\.prepareNarrations\?\.\(scene, entry\.id\)/.test(panel) && /data-action="makeNarrationVoices"/.test(panel)
+  && /makeNarrationVoices: AcePanel\._onMakeNarrationVoices,/.test(panel));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
