@@ -126,5 +126,19 @@ check("the list follows the scene: on a scene change and when its narrations cha
   /panel\._refreshSavedNarrationsUI\(\);\s+\/\/ the Narration tab/.test(engine)
   && /hasProperty\(changes \?\? \{\}, `flags\.\$\{MODULE_ID\}\.narrations`\)/.test(engine));
 
+// ── The players hear the narrator, not a robot (his table, 2026-10-16: "X5
+//    approach" in the narrator voice on Firaxis's screen, "X5 entry" in the
+//    robot, because the longer audio was over a 700 KB guess and the players were
+//    sent the words instead) ──
+const limits = src(`${ENGINE}text-limits.mjs`);
+check("one limit on audio over the socket, the size the NPC voices always had",
+  /export const AUDIO_SOCKET_MAX_B64 = 6_000_000;/.test(limits));
+check("no 700 KB cap left anywhere in Engine", !/700_000/.test(panel) && !/700_000/.test(engine));
+check("the narrator and NPC speech both send under that one limit",
+  (panel.match(/base64\.length <= AUDIO_SOCKET_MAX_B64/g) ?? []).length === 2);
+check("the receiver refuses by the same limit", /const AUDIO_MAX_BYTES\s*=\s*AUDIO_SOCKET_MAX_B64;/.test(engine));
+check("too long for the voice sends words only when the GM chose the browser voice",
+  /\} else if \(this\._browserVoiceChosen\(\)\) \{\s*\/\/[^\n]*\n\s*game\.socket\.emit\(`module\.\$\{MODULE_ID\}`, \{\s*type: "narration-tts"/.test(panel));
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
