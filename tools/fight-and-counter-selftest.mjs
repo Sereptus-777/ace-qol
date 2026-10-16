@@ -70,6 +70,22 @@ check("Join rolls HIS initiative on his own screen, and answers after the dice l
 check("a player is asked once per fight", /fight\.setFlag\(MODULE_ID, "comesUponAsked"/.test(pw));
 check("the GM is told what was chosen on the black ACE card", /await PerceptionWatch\._gmLine\(foundry\.utils\.escapeHTML\(said\)\);/.test(pw));
 
+// ── Every popup holds the players until it is answered (his rule, 2026-10-16) ──
+const lockHook = pw.slice(pw.indexOf('Hooks.on("preUpdateToken", (tokenDoc, changes) => {'), pw.indexOf('Hooks.on("pauseGame"'));
+check("the GM's moves and ACE's automatic ones are never held", /if \(game\.user\.isGM\) return;/.test(lockHook));
+check("in a running fight, the creatures in it are never held",
+  /if \(fight && PerceptionWatch\._inFight\(fight, tokenDoc\)\) return;/.test(lockHook));
+check("a quiet hold says nothing that gives the moment away", /"Hold on: the GM needs a moment\."/.test(lockHook));
+check("a quiet GM popup holds, and lets go when answered",
+  /\} else \{\s*\/\/[^\n]*\n\s*await PerceptionWatch\._hold\(scene, key\);/.test(pw)
+  && /if \(kind !== "mutual"\) await PerceptionWatch\._release\(scene, key\);/.test(pw));
+check("the player's fight popup holds everybody else until he answers, and always lets go",
+  /await PerceptionWatch\._hold\(scene, holdKey\);/.test(pw) && /\} finally \{\s*await PerceptionWatch\._release\(scene, holdKey\);/.test(pw));
+check("unpausing ends the sighting's hold only; an open question holds on",
+  /PerceptionWatch\._releaseSeen\(canvas\?\.scene\)/.test(pw) && /if \(!now\.open\.length && !now\.seen\) await PerceptionWatch\._unlock\(scene\);/.test(pw));
+check("a second GM screen loading cannot let go of a live hold",
+  /if \(game\.users\?\.activeGM === game\.user\) \{\s*for \(const scene of \(game\.scenes \?\? \[\]\)\) \{\s*if \(!scene\.getFlag\?\.\(MODULE_ID, PerceptionWatch\.LOCK_FLAG\)\) continue;/.test(pw));
+
 // The fight check itself, run on example fights.
 const body = (() => {
   const start = pw.indexOf("static _fightOn(scene) {");

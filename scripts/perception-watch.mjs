@@ -164,15 +164,30 @@ export class PerceptionWatch {
     });
 
     /* ⚠️ THE HARD LOCK. A pause does not cancel a drag already in flight, so
-       the move itself is refused while a mutual-sight popup is open. */
+       the move itself is refused while a popup is open.
+       ⚠️🔴 EVERY POPUP HOLDS THE PLAYERS, NOT ONLY A MUTUAL SIGHTING (his rule,
+       2026-10-16): "Everybody who gets a pop-up: everybody else has to wait
+       until they answer." One player notices, the others "just keep on
+       walking." Held on THAT scene only; only moves a PLAYER makes (the GM's,
+       and ACE's own pushes, falls and teleports, are never held); and during a
+       running fight only the player characters who are not in it. A quiet
+       popup (a creature that saw or heard someone unseen, a fight found) holds
+       with a neutral line, so the hold does not tell the table what happened. */
     Hooks.on("preUpdateToken", (tokenDoc, changes) => {
       if (changes?.x === undefined && changes?.y === undefined) return;
-      if (!tokenDoc?.parent?.getFlag?.(MODULE_ID, PerceptionWatch.LOCK_FLAG)) return;
+      const lock = tokenDoc?.parent?.getFlag?.(MODULE_ID, PerceptionWatch.LOCK_FLAG);
+      if (!lock) return;
+      // SILENT-OK: the GM's own moves, and ACE's automatic ones, are never held
+      if (game.user.isGM) return;
       if (!tokenDoc?.actor?.hasPlayerOwner) return;
-      console.log(`${LOG} | ${tokenDoc.name} is held still: a creature is looking straight `
-        + `at somebody and the popup has not been answered yet.`);
+      // SILENT-OK: in a running fight the creatures in it move on their own turns
+      const fight = PerceptionWatch._fightOn(tokenDoc.parent);
+      if (fight && PerceptionWatch._inFight(fight, tokenDoc)) return;
+      const seen = lock === true || lock?.seen === true;
+      console.log(`${LOG} | ${tokenDoc.name} is held still until the open question is answered.`);
       try {
-        ui.notifications?.warn(`${tokenDoc.name} stops: something has seen you.`);
+        ui.notifications?.warn(seen ? `${tokenDoc.name} stops: something has seen you.`
+          : "Hold on: the GM needs a moment.");
       } catch (_) { /* the console has it either way */ }
       return false;   // cancel the move
     });
@@ -184,7 +199,8 @@ export class PerceptionWatch {
       if (paused || game.users?.activeGM !== game.user) return;
       // ⚠️ UNPAUSING LETS THEM MOVE. IT DOES NOT FORGET ANYBODY. It used to
       // clear the memory here, which is why one creature could ask twice.
-      PerceptionWatch._unlock(canvas?.scene).catch(err =>
+      // It ends the sighting's hold only: a question still open holds on.
+      PerceptionWatch._releaseSeen(canvas?.scene).catch(err =>
         console.warn(`${LOG} | could not take the movement lock off:`, err));
     });
 
@@ -212,7 +228,9 @@ export class PerceptionWatch {
     /* ⚠️ A LOCK LEFT OVER FROM A RELOAD WOULD FREEZE HIS TABLE WITH NOTHING TO
        CLICK. No popup can be open at startup, so any lock on a scene now is
        stale by definition. */
-    if (game.user.isGM) {
+    // The active GM only: a second GM screen loading must not let go of a
+    // question the active GM still has open.
+    if (game.users?.activeGM === game.user) {
       for (const scene of (game.scenes ?? [])) {
         if (!scene.getFlag?.(MODULE_ID, PerceptionWatch.LOCK_FLAG)) continue;
         console.warn(`${LOG} | "${scene.name}" was still locked from a previous session, `
@@ -341,9 +359,48 @@ export class PerceptionWatch {
   /** Hold every player token still, on every client. GM only. */
   static async _lockDown(scene) {
     if (!scene || !game.user.isGM) return;
-    try { await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, true); }
+    const now = PerceptionWatch._lockState(scene);
+    try { await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, { seen: true, open: now.open }); }
     catch (err) { console.error(`${LOG} | the movement lock could not be set, so a drag `
       + `already in flight will land:`, err); }
+  }
+
+  /** The lock as it stands: was something seen (the paused kind), and which questions are open. */
+  static _lockState(scene) {
+    const raw = scene?.getFlag?.(MODULE_ID, PerceptionWatch.LOCK_FLAG);
+    if (!raw) return { seen: false, open: [] };
+    if (raw === true) return { seen: true, open: [] };
+    return { seen: raw.seen === true, open: Array.isArray(raw.open) ? [...raw.open] : [] };
+  }
+
+  /** Hold the players while one more question is open on this scene. */
+  static async _hold(scene, key) {
+    if (!scene || !game.user.isGM) return;
+    const now = PerceptionWatch._lockState(scene);
+    if (!now.open.includes(key)) now.open.push(key);
+    try { await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, now); }
+    catch (err) { console.error(`${LOG} | the players could not be held while "${key}" is asked:`, err); }
+  }
+
+  /** He unpaused: the sighting's hold ends; a question still open keeps holding. */
+  static async _releaseSeen(scene) {
+    if (!scene || !game.user.isGM) return;
+    const now = PerceptionWatch._lockState(scene);
+    if (!now.seen) return;
+    if (!now.open.length) return PerceptionWatch._unlock(scene);
+    try { await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, { seen: false, open: now.open }); }
+    catch (err) { console.warn(`${LOG} | could not end the sighting's hold:`, err); }
+  }
+
+  /** One question answered. The players move again once none is open, unless a sighting still holds them. */
+  static async _release(scene, key) {
+    if (!scene || !game.user.isGM) return;
+    const now = PerceptionWatch._lockState(scene);
+    now.open = now.open.filter(k => k !== key);
+    try {
+      if (!now.open.length && !now.seen) await PerceptionWatch._unlock(scene);
+      else await scene.setFlag(MODULE_ID, PerceptionWatch.LOCK_FLAG, now);
+    } catch (err) { console.warn(`${LOG} | could not let go of "${key}":`, err); }
   }
 
   /** Let them move again. */
@@ -698,14 +755,20 @@ export class PerceptionWatch {
     console.log(`${LOG} | ${line} Asking ${answerer?.user?.name ?? "the GM"}: Wait, Ready, Join${talkTo.length ? " or Talk" : ""}. `
       + `(${answerer?.why ?? "no player could be found"})`);
 
+    // Everybody else on this scene waits for his answer (his rule, 2026-10-16).
+    const holdKey = `fight>${pc.id}`;
+    await PerceptionWatch._hold(scene, holdKey);
     let result = null;
     try {
       result = (answerer?.user && answerer.user.id !== game.user.id && answerer.user.active)
         ? await answerer.user.query(PerceptionWatch.QUERY, data, { timeout: 10 * 60 * 1000 })
         : await PerceptionWatch._comesUponQuery(data);
     } catch (err) {
-      console.warn(`${LOG} | ${pc.name}'s player did not answer about the fight (${err?.message ?? err}), so nothing happened:`, err);
+      console.warn(`${LOG} | ${pc.name}'s player did not answer about the fight (${err?.message ?? err}), so nothing happened and the players move again:`, err);
+      ui.notifications?.warn(`ACE: ${pc.name}'s player did not answer about the fight, so the players can move again.`);
       return;
+    } finally {
+      await PerceptionWatch._release(scene, holdKey);
     }
     const choice = result?.choice ?? "wait";
     const talked = result?.talkTo ? scene.tokens.get(result.talkTo) : null;
@@ -871,6 +934,9 @@ export class PerceptionWatch {
       await PerceptionWatch._lockDown(pcDoc.parent ?? canvas?.scene);
       try { if (!game.paused) game.togglePause(true); }
       catch (err) { console.warn(`${LOG} | could not pause the game:`, err); }
+    } else {
+      // A quiet one holds the players too, with no pause and a neutral line.
+      await PerceptionWatch._hold(scene, key);
     }
 
     const esc = (s) => foundry.utils.escapeHTML(String(s ?? ""));
@@ -912,6 +978,7 @@ export class PerceptionWatch {
          with nothing on screen. It says what happened and lets go. */
       try {
         await PerceptionWatch._answer(choice, { kind, foeDoc, pcDoc, creatures });
+        if (kind !== "mutual") await PerceptionWatch._release(scene, key);
       } catch (err) {
         console.error(`${LOG} | "${choice}" failed on ${foeDoc?.name} / ${pcDoc?.name}, `
           + `so the table is released:`, err);
@@ -953,7 +1020,7 @@ export class PerceptionWatch {
     if (choice === "wait") {
       // Unpause, let go, no combatant. Only a mutual sighting ever paused.
       if (kind === "mutual") {
-        await PerceptionWatch._unlock(pcDoc.parent ?? canvas?.scene);
+        await PerceptionWatch._releaseSeen(pcDoc.parent ?? canvas?.scene);
         try { if (game.paused) game.togglePause(false); }
         catch (err) { console.warn(`${LOG} | could not unpause:`, err); }
       }
