@@ -208,8 +208,23 @@ export class CreatureTriggers {
     const actor = sourceDoc.actor;
     const name = sourceDoc.name ?? actor.name;
     const tag = `${name}'s ${item.name}`;
+    // ⚠️ A CREATURE'S OWN TURN: EVERY GIVE-UP BELOW IS SAID (his table, 2026-10-14:
+    // "the Ghast's stench is not working", and nothing here said why). An aura the
+    // creature began its turn outside of is none of its business and is only a
+    // debug line; one it began inside of names each step it stops at.
+    if (only) {
+      let ft = Infinity;
+      try { ft = aceDistanceFt(sourceDoc, only); } catch (_) { ft = Infinity; }
+      const reach = Number(aura.radiusFt) || null;
+      if (reach && ft > reach + 0.1) {
+        console.debug(`${LOG} | ${tag}: ${only.name} began its turn ${Math.round(ft)} feet away, outside its ${reach}.`);
+        return;
+      }
+      say(`${tag}: ${only.name} began its turn ${Number.isFinite(ft) ? `${Math.round(ft)} feet` : "an unknown distance"} `
+        + `from it (it reaches ${reach ?? "?"} feet).`);
+    }
     if (!CreatureTriggers._living(sourceDoc)) {
-      if (!only) say(`${tag}: it is dead, so it burns nobody.`);
+      say(`${tag}: it is dead, so it ${only ? "catches" : "burns"} nobody.`);
       return;
     }
     if (aura.unlessIncapacitated && CreatureTriggers._outOfAction(actor)) {
@@ -220,6 +235,7 @@ export class CreatureTriggers {
       ? await CreatureTriggers._recipeFor(item, actor, ["save"])
       : CreatureTriggers._damageRecipe(item, aura, await CreatureTriggers._recipeFor(item, actor, ["automatic"]));
     if (!rec) {
+      if (only) say(`${tag}: ${aura.save ? "its words ask for a save its item does not carry" : "no damage could be read from its words or its item"}, so ${only.name} was not asked.`);
       if (!only) {
         say(`${tag}: ${aura.save ? "its words ask for a save its item does not carry" : "no damage could be read from its words or its item"}, so nothing was run.`);
         // Once a fight for each creature: a note every round would bury the chat.
@@ -235,7 +251,7 @@ export class CreatureTriggers {
     }
     const radius = CreatureTriggers._radius(aura.radiusFt, rec, item);
     if (!radius) {
-      if (!only) say(`${tag}: neither its words nor its item say how far it reaches, so nobody was measured.`);
+      say(`${tag}: neither its words nor its item say how far it reaches, so nobody was measured.`);
       return;
     }
     let caught = CreatureTriggers._around(sourceDoc, radius);
@@ -293,7 +309,10 @@ export class CreatureTriggers {
          empty room. */
       if (spared.length) {
         say(`${tag}: in range ${inRange.join(", ")}; every one of them marked safe, so nobody was burned.`);
-      } else if (!only) {
+      } else if (only) {
+        say(`${tag}: ${only.name} was not asked: not within its ${radius} feet edge to edge, not among `
+          + `the living, or left out by its words (said above when it was).`);
+      } else {
         say(`${tag}: nobody living within ${radius} feet for it to burn.`);
       }
       return;

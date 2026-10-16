@@ -1,7 +1,9 @@
 /* ─── THE PORTAL ENGINE ───────────────────────────────────────────────────────
  *
- * Defines globalThis.AcePortals and arms its hooks once. Both macros carry this
- * text, so pressing either one re-arms everything after a reload.
+ * Defines globalThis.AcePortals and arms its hooks once. ACE QOL loads this file
+ * itself when the world starts, on a GM's screen, in any world with a portal
+ * actor (scripts/world-portals.mjs, 2026-10-15), so no button is needed after a
+ * reload. Both macros still carry this text and still work as buttons.
  *
  * It never places a player's creature, never rolls for a player, never touches a
  * dragon, and never starts a turn for the table.
@@ -64,11 +66,11 @@
 
   /* ⚠️ ONE CRACK SOUND HE ALREADY HAS, and the file is CHECKED (his rule: "If
      you cannot find one, say so in the console and still post the card. Do not
-     invent a path."). Both of these are on his disk today; the second is ACE's
-     own, so it answers even if that module is ever removed. */
+     invent a path."). His pick, 2026-10-14: the mountainous big crack, in ACE's
+     own folder, and the two older ones removed. The world macros already carry
+     it; this file is the copy ACE loads and the fix script pushes. */
   const CRACKS = [
-    "modules/fvtt-sonniss-gdc-audio/assets/audio/bluezone-bc0278-ice-crack-break-002.ogg",
-    "modules/ace-qol/Assets/Sounds/thunder-crack.mp3",
+    "modules/ace-qol/Assets/Sounds/thunder-mountainous-big-crack-02.ogg",
   ];
   let _crack;            // undefined = not looked for yet, null = there is none
   const crackSound = async () => {

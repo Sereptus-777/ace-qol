@@ -72,10 +72,18 @@ const UNTIL_ITS_NEXT_START = /\buntil the start of (?:its|their|the creature's|t
  * @param {string} html
  * @param {{item?: Item}} [ctx]  the item the words belong to, to answer its lookups
  */
-export function plainWords(html, { item = null } = {}) {
-  let s = String(html ?? "");
-  s = s.replace(/\[\[lookup\s+@([\w.]+)([^\]]*)\]\](?:\{([^}]*)\})?/gi,
+/**
+ * An item's "[[lookup @path ...]]" tags answered from the item itself, and
+ * nothing else touched. The one place a lookup is read (2026-09-19, "a lookup is
+ * part of the sentence"); every reader of an item's words asks it.
+ */
+export function resolveLookups(html, { item = null } = {}) {
+  return String(html ?? "").replace(/\[\[lookup\s+@([\w.]+)([^\]]*)\]\](?:\{([^}]*)\})?/gi,
     (_m, path, opts, label) => lookupText(item, path, opts, label));
+}
+
+export function plainWords(html, { item = null } = {}) {
+  let s = resolveLookups(html, { item });
   s = s.replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
     .replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, "\"");

@@ -97,5 +97,20 @@ check("both add the caster's modifier", /\+ @flags\.dnd5e\.summon\.mod$/.test(DI
     && (atk.match(/if \(!_flat && missingBonus !== 0/g) ?? []).length === 2);
 }
 
+// ── What you see is its space, and its caster's owners own it (his table,
+//    2026-10-14: "out of reach, which I'm not", and "not an owner of Spiritual
+//    Weapon... He is the owner") ──
+{
+  const { readFileSync } = await import("fs");
+  const { fileURLToPath } = await import("url");
+  const sw = readFileSync(fileURLToPath(new URL("../scripts/spiritual-weapon.mjs", import.meta.url)), "utf8");
+  check("no art drawn bigger than the token", !/ART_SCALE/.test(sw) && /scaleX: 1, scaleY: 1/.test(sw));
+  check("one full square, snapped, before either placement is measured",
+    /tokenData\.width = 1;\s*tokenData\.height = 1;/.test(sw)
+    && (sw.match(/squareUp\(tokenData\);\s*\n\s*(?:if \(casterDoc\) )?SpiritualWeapon\._holdRange/g) ?? []).length === 2);
+  check("the caster's owners own this weapon, on its own token",
+    /ownership: foundry\.utils\.deepClone\(caster\.ownership\)/.test(sw));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

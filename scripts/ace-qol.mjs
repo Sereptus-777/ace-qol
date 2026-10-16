@@ -91,6 +91,7 @@ import { BreathAnimator }       from "./breath-animator.mjs";
 import { EffectSweeper }        from "./effect-sweeper.mjs";
 import { CreatureTriggers }     from "./creature-triggers.mjs";
 import { SpiritualWeapon }      from "./spiritual-weapon.mjs";
+import { armWorldPortals }      from "./world-portals.mjs";
 import { GrappleTurn } from "./grapple-turn.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
 import { RestrainedMovement }   from "./restrained-movement.mjs";
@@ -163,6 +164,8 @@ import { registerLuck, afterAttackRoll as luckAfterAttackRoll,
          needsBeforeRoll as luckNeedsBeforeRoll, beforeAttackRoll as luckBeforeAttackRoll } from "./luck.mjs";
 // ⚠️ THE ONE RULE for "does this attack hit" (shared with the GM path and Lucky).
 import { judgeAttack } from "./rules/attack-hit.mjs";
+// A delete ACE makes because a spell already ended says so (rules/spell-tokens.mjs).
+import { removedBecause } from "./rules/spell-tokens.mjs";
 import { ConditionGhostSweeper } from "./condition-ghost-sweeper.mjs";
 import { PlatformContract, checkContract } from "./platform-contract.mjs";
 import { UnknownScout } from "./unknown-scout.mjs";
@@ -2988,7 +2991,8 @@ Hooks.once("ready", () => {
             console.log(`${MODULE_ID} | [concentration-end:${source}] grace-period skip on ${gracedSkipped.length} freshly-created template(s):`, gracedSkipped);
           }
           if (toDelete.length > 0) {
-            await scene.deleteEmbeddedDocuments("MeasuredTemplate", toDelete);
+            await scene.deleteEmbeddedDocuments("MeasuredTemplate", toDelete,
+              removedBecause(`${casterName ?? "its caster"}'s concentration on ${spellName ?? "it"} ended`));
             console.log(`${MODULE_ID} | [concentration-end:${source}] removed ${toDelete.length} template(s) for ${spellName ?? "(any spell)"} on caster ${casterName ?? casterId}`);
           }
         }
@@ -3033,7 +3037,10 @@ Hooks.once("ready", () => {
             summonIds.push(tokenDoc.id);
           }
           if (summonIds.length > 0) {
-            await scene.deleteEmbeddedDocuments("Token", summonIds);
+            // ⚠️ Says why: on a recast dnd5e has already begun the NEW
+            // concentration, which this delete must not end.
+            await scene.deleteEmbeddedDocuments("Token", summonIds,
+              removedBecause(`${casterName ?? "its caster"}'s concentration on ${spellName ?? "it"} ended`));
             console.log(`${MODULE_ID} | [concentration-end:${source}] removed ${summonIds.length} summoned creature(s) for ${spellName ?? "(any spell)"} on caster ${casterName ?? casterId}`);
           }
         }
@@ -3831,6 +3838,8 @@ Hooks.once("ready", () => {
   } catch (err) {
     console.error(`${MODULE_ID} | Spiritual Weapon init failed:`, err);
   }
+  // His portal fight arms itself, in a world that has one (world-portals.mjs).
+  armWorldPortals().catch(err => console.error(`${MODULE_ID} | the portal fight could not arm:`, err));
 
   // Prismatic Wall — EVERY client: the caster's own screen asks who passes the
   // wall unharmed; the active GM's screen rolls for whoever comes near it or

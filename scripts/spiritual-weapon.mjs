@@ -27,14 +27,18 @@
 // picker rule, targeting, areas, auras, the cold hour and initiative all read
 // (road/picker-rule.mjs, notACreature).
 // ⚠️ HOW IT ENDS, BY EDITION: 1 minute, or a recast; a concentration copy also
-// when concentration ends (ACE's concentration sweep removes summons). A 2014
-// weapon does NOT end when its caster drops: it is not concentration.
+// when concentration ends (ACE's concentration sweep removes summons), and the
+// GM deleting it ends that concentration (his rule, 2026-10-14; the token door
+// in concentration-widget.mjs). A 2014 weapon does NOT end when its caster
+// drops: it is not concentration.
 // ⚠️ GM PATH FIRST: placing a token and fetching the weapon creature need a GM.
 // A player's caster is part 2 (ownership of the weapon), said out loud below.
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { isSpiritualWeapon } from "./rules/spell-name.mjs";
 import { aimAt } from "./road/aim.mjs";
+// A weapon replaced by a recast is not a dismissed one (rules/spell-tokens.mjs).
+import { removedBecause } from "./rules/spell-tokens.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | Spiritual Weapon";
@@ -52,8 +56,6 @@ const CAST_FT = 60;
 const MOVE_FT = 20;
 const REACH_FT = 5;
 const LASTS_SECONDS = 60;
-/** The art is drawn twice the footprint: a half-square token, a weapon you can see. */
-const ART_SCALE = 2;
 
 /* ═══ Reading the spell ══════════════════════════════════════════════════ */
 
@@ -251,8 +253,28 @@ function weaponsOf(item, scene = canvas?.scene) {
 }
 
 /**
- * What a weapon token carries: its name, its look, its side, no sight, and the
- * marks that make it "not a creature" and say whose it is and when it ends.
+ * ⚠️🔴 WHAT YOU SEE IS ITS SPACE (his table, 2026-10-14: "it says I'm out of
+ * reach, which I'm not. I'm right beside it"). dnd5e's weapon creature is a
+ * half-square token, and ACE drew its art at twice that so it could be seen: the
+ * picture filled a square while its real half-square sat a step away, and every
+ * reach was measured from the half-square. It is one full square now, drawn at
+ * its own size and snapped to the square it was placed in.
+ */
+function squareUp(tokenData) {
+  const g = canvas.grid?.size ?? 100;
+  const c = _centre(tokenData);
+  tokenData.width = 1;
+  tokenData.height = 1;
+  let corner = { x: Math.floor(c.x / g) * g, y: Math.floor(c.y / g) * g };
+  try { corner = canvas.grid.getTopLeftPoint(c) ?? corner; } catch (_) { /* the square arithmetic above */ }
+  tokenData.x = corner.x;
+  tokenData.y = corner.y;
+}
+
+/**
+ * What a weapon token carries: its name, its look, its side, its owners, no
+ * sight, and the marks that make it "not a creature" and say whose it is and
+ * when it ends.
  */
 function dress(tokenData, ctx) {
   const { caster, casterDoc, item, edition, art } = ctx;
@@ -260,8 +282,18 @@ function dress(tokenData, ctx) {
   if (casterDoc && Number.isFinite(Number(casterDoc.disposition))) tokenData.disposition = casterDoc.disposition;
   tokenData.sight = { ...(tokenData.sight ?? {}), enabled: false };
   tokenData.displayBars = CONST.TOKEN_DISPLAY_MODES.NONE;
-  tokenData.texture = { ...(tokenData.texture ?? {}), ...(art ? { src: art } : {}),
-    scaleX: ART_SCALE, scaleY: ART_SCALE };
+  tokenData.texture = { ...(tokenData.texture ?? {}), ...(art ? { src: art } : {}), scaleX: 1, scaleY: 1 };
+  // ⚠️🔴 WHOEVER OWNS THE CASTER OWNS ITS WEAPON (his table, 2026-10-14: "Why
+  // does it say ACE Tester Player is not an owner of Spiritual Weapon? He is the
+  // owner."). He owns ACE Test Dummy; the weapon is a creature of its own, and
+  // nobody had been given it, so the GM's screen refused every swing the player
+  // made. The ownership rides on THIS token's creature only (its actor delta),
+  // so a player owns his own weapon and nobody else's.
+  if (caster?.ownership) {
+    tokenData.delta = foundry.utils.mergeObject(tokenData.delta ?? {}, {
+      ownership: foundry.utils.deepClone(caster.ownership),
+    });
+  }
   const now = Number(game.time?.worldTime ?? 0);
   tokenData.flags = foundry.utils.mergeObject(tokenData.flags ?? {}, {
     [MODULE_ID]: {
@@ -457,6 +489,7 @@ export const SpiritualWeapon = {
       return;
     }
     const tokenData = (await weaponActor.getTokenDocument({ x: spot.x, y: spot.y, elevation: spot.elevation ?? casterDoc.elevation ?? 0 })).toObject();
+    squareUp(tokenData);
     SpiritualWeapon._holdRange(tokenData, casterDoc, item);
     dress(tokenData, { caster, casterDoc, item, edition, art });
     tokenData.delta = foundry.utils.mergeObject(tokenData.delta ?? {}, {
@@ -523,6 +556,7 @@ export const SpiritualWeapon = {
     if (!isSpiritualWeapon(item)) return;
     const caster = item.actor;
     const casterDoc = casterDocOf(caster);
+    squareUp(tokenData);
     if (casterDoc) SpiritualWeapon._holdRange(tokenData, casterDoc, item);
     dress(tokenData, { caster, casterDoc, item, edition: editionOf(item), art: rememberedArt(caster) });
   },
@@ -534,7 +568,7 @@ export const SpiritualWeapon = {
     if (!weaponDoc) return;
     // Its older weapons go (2014: "until you cast this spell again").
     for (const old of weaponsOf(item)) {
-      if (old.id !== weaponDoc.id && game.user.isGM) await old.delete();
+      if (old.id !== weaponDoc.id && game.user.isGM) await old.delete(removedBecause("it was cast again"));
     }
     if (!rememberedArt(caster)) await SpiritualWeapon._chooseLook(caster, weaponDoc);
     await SpiritualWeapon.strike(weaponDoc);
@@ -543,7 +577,7 @@ export const SpiritualWeapon = {
   /** Every older weapon of this item comes off the map. */
   async _endOld(item, why) {
     for (const old of weaponsOf(item)) {
-      try { await old.delete(); say(`${old.name} is gone: ${why}.`); }
+      try { await old.delete(removedBecause(why)); say(`${old.name} is gone: ${why}.`); }
       catch (err) { console.warn(`${LOG} | could not take ${old.name} off the map:`, err); }
     }
   },

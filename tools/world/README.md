@@ -16,7 +16,7 @@ of the world before it claims anything.
 | Script | What it does |
 |---|---|
 | `ace-portals.js` | Creates the three vortex actors in the Actor folder `1. MONSTERS`: vehicles, 500/500, AC 18, both thresholds empty, 25-foot tokens, unlinked, locked, blue and yellow friendly, red hostile. Creates no table, macro or folder. Reads all three back and prints FOUND or MISSING. |
-| `ace-portals-engine.js` | The portal engine itself: the round, the spawn, the thresholds, the cards. Not run directly. `Portal Round` and `Portal Opening` each carry a copy of this text, and `ace-portals-fix.js` is what puts a new copy into them. |
+| `ace-portals-engine.js` | The portal engine itself: the round, the spawn, the thresholds, the cards. ACE QOL loads this file itself when the world starts, on a GM's screen, in any world with a portal actor (`scripts/world-portals.mjs`), so it is armed after every reload with no button. `Portal Spawn` and `Portal Opening` each still carry a copy of this text, and `ace-portals-fix.js` is what puts a new copy into them. |
 | `ace-portals-fix.js` | Pushes the current engine into both macros in place, repaints the three vortex tokens, and fixes the live session. Creates nothing. Run this after any edit to the engine. |
 | `ace-fill-spells.js` | Reads Spellcasting and Innate Spellcasting off every actor a token on a scene is using, unlinked ones included, and adds the spells those words name. Never a player character, never a duplicate, never a removal. |
 | `ace-fill-spells-rest.js` | The same job for every actor in the world directory and every unlocked world Actor compendium. It lifts the parser out of `ace-fill-spells.js` at run time rather than carrying a copy, so there is one definition of how a statblock is read. |

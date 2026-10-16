@@ -37,6 +37,8 @@ import { RulesBrain } from "./rules/rules-brain.mjs";
 // Prismatic Wall is run by its own engine (a wall is crossed, not stood in);
 // a pure leaf, so it adds nothing to the import cycle.
 import { isPrismaticWall } from "./rules/prismatic-wall.mjs";
+// What a spell's token is, and why ACE removed one. A pure leaf.
+import { spellOriginOf, othersFromTheSameSpell, whyRemoved } from "./rules/spell-tokens.mjs";
 // ⚠️ THE ROAD DECIDES WHAT A TRIGGER LANDS (The One Road, Phase 5). This file
 // says WHO walked in and WHEN; run() asks the cast's own recipe for the rest.
 import { run as runTrigger, catchesOn } from "./road/run.mjs";
@@ -70,6 +72,10 @@ export class ConcentrationWidget {
     // the gas got in them before the cloud cleared).
     /** @type {Map<string, {spellName:string, sourceActorUuid:string|null}>} */
     this._pendingLingering = new Map();
+
+    // "caster uuid|item uuid" while a removed token is ending that concentration.
+    /** @type {Set<string>} */
+    this._endingFor = new Set();
 
     this._registerHooks();
   }
@@ -112,7 +118,13 @@ export class ConcentrationWidget {
 
     // Template deleted — remove widget
     Hooks.on("deleteMeasuredTemplate", (templateDoc, opts, userId) => {
-      this._onTemplateDeleted(templateDoc.id);
+      this._onTemplateDeleted(templateDoc.id, opts);
+    });
+
+    // A spell's token deleted: the same rule as its area (see _onSpellTokenDeleted)
+    Hooks.on("deleteToken", (tokenDoc, opts) => {
+      this._onSpellTokenDeleted(tokenDoc, opts).catch(err =>
+        console.warn(`${TAG} | ${tokenDoc?.name ?? "A token"} was removed, and ending its caster's concentration failed:`, err));
     });
 
     // Turn change in combat — check for start/end-of-turn triggers
@@ -1140,7 +1152,7 @@ export class ConcentrationWidget {
   //  Template Deleted — Remove Widget
   // ═══════════════════════════════════════════════════════════════
 
-  async _onTemplateDeleted(templateId) {
+  async _onTemplateDeleted(templateId, opts = {}) {
     if (!this._activeSpells.has(templateId)) return;
     const tracker = this._activeSpells.get(templateId);
     // Its own light, whatever drew it, ends with it.
@@ -1189,8 +1201,72 @@ export class ConcentrationWidget {
     // concentration on that spell (no template = no spell area = no
     // ongoing effect). Drop the actor's concentration effect tied to
     // this item.
-    if (game.users?.activeGM === game.user && tracker.actor && tracker.item) {
+    //
+    // ⚠️ Unless ACE removed it as the consequence of something else (its
+    // concentration already ended, or it was cast again: dnd5e begins the new
+    // concentration before it ends the old one). See rules/spell-tokens.mjs.
+    const why = whyRemoved(opts);
+    if (why) {
+      console.debug(`${TAG} | ${tracker.item?.name ?? "A spell"}'s area left the map because ${why}; no concentration was changed for it.`);
+    } else if (game.users?.activeGM === game.user && tracker.actor && tracker.item) {
       await this._dropConcentrationForItem(tracker.actor, tracker.item);
+    }
+  }
+
+  /**
+   * ⚠️🔴 DELETING A SPELL'S TOKEN ENDS IT, THE SAME AS DELETING ITS AREA (his
+   * rule, 2026-10-14): "When it's deleted off the scene, the concentration
+   * should come off the caster." The area door above has done this since
+   * 0.6.3. A token had nothing: deleting ACE Test Dummy's Spiritual Weapon left
+   * him concentrating on a spell with nothing on the map.
+   *
+   * dnd5e stamps every summoned creature with the spell that made it and never
+   * ties it to the concentration (5.3.3), so the spell is read from that stamp.
+   * Several from one spell (Conjure Animals' wolves): it ends with the LAST one,
+   * on any scene.
+   */
+  async _onSpellTokenDeleted(tokenDoc, opts = {}) {
+    // SILENT-OK: every client hears the delete; only the active GM ends a concentration
+    if (game.users?.activeGM !== game.user) return;
+    const origin = spellOriginOf(tokenDoc);
+    // SILENT-OK: no spell put this token on the map, which is most deletes
+    if (!origin) return;
+    const name = tokenDoc?.name ?? "A summoned creature";
+    const why = whyRemoved(opts);
+    if (why) {
+      console.debug(`${TAG} | ${name} left the map because ${why}; no concentration was changed for it.`);
+      return;
+    }
+    let item = null;
+    try { item = fromUuidSync(origin, { strict: false }); } catch (_) { item = null; }
+    const caster = item?.actor ?? null;
+    if (!caster) {
+      console.log(`${TAG} | ${name} was removed, but the spell that made it could not be found (${origin}), so no concentration was changed.`);
+      return;
+    }
+    if (!this._concentrationEffectsFor(caster, item).length) {
+      console.debug(`${TAG} | ${name} was removed; ${caster.name} is not concentrating on ${item.name}, so there is nothing to end.`);
+      return;
+    }
+    const left = othersFromTheSameSpell(origin, tokenDoc?.id, game.scenes);
+    if (left.length) {
+      console.log(`${TAG} | ${name} was removed; ${caster.name}'s ${item.name} still has ${left.map(t => t.name).join(", ")} on the map, so the concentration holds.`);
+      return;
+    }
+    // Several deleted in one go each hear the delete; one ends it.
+    const key = `${caster.uuid}|${item.uuid}`;
+    if (this._endingFor.has(key)) {
+      console.debug(`${TAG} | ${name} was removed; ${caster.name}'s concentration on ${item.name} is already being ended.`);
+      return;
+    }
+    this._endingFor.add(key);
+    try {
+      console.log(`${TAG} | ${name} was the last of ${caster.name}'s ${item.name} on the map: ending that concentration.`);
+      const dropped = await this._dropConcentrationForItem(caster, item);
+      if (dropped) ui.notifications?.info(`${caster.name} is no longer concentrating on ${item.name}: ${name} was removed from the map.`);
+      else ui.notifications?.warn(`${name} was removed, but ${caster.name}'s concentration on ${item.name} could not be ended. Remove it from ${caster.name} by hand.`);
+    } finally {
+      this._endingFor.delete(key);
     }
   }
 
@@ -1318,10 +1394,27 @@ export class ConcentrationWidget {
    */
   async _dropConcentrationForItem(actor, item) {
     if (!actor || !item) return false;
+    for (const effect of this._concentrationEffectsFor(actor, item)) {
+      console.log(`${TAG} | Dropping concentration "${effect.name}" on ${actor.name}`);
+      try {
+        await effect.delete();
+        return true;
+      } catch (err) {
+        console.warn(`${TAG} | Failed to delete concentration effect on ${actor.name}:`, err);
+      }
+    }
+    console.log(`${TAG} | No matching concentration effect found on ${actor.name} for item ${item.name}`);
+    return false;
+  }
+
+  /** The caster's concentration on this spell. One matcher for the area door and the token door. */
+  _concentrationEffectsFor(actor, item) {
+    if (!actor || !item) return [];
     const effects = Array.from(actor.effects?.contents ?? actor.effects ?? []);
     const itemName  = (item.name ?? "").toLowerCase();
     const itemId    = item.id ?? "";
     const itemUuid  = item.uuid ?? "";
+    const found = [];
 
     for (const effect of effects) {
       const isConcentration = effect.statuses?.has?.("concentration")   // dnd5e 5.x
@@ -1341,18 +1434,9 @@ export class ConcentrationWidget {
                    || (itemUuid && (origin.includes(itemUuid) || flagUuid.includes(itemUuid)))
                    || (itemName && effectName.includes(itemName));
 
-      if (matches) {
-        console.log(`${TAG} | Dropping concentration "${effect.name}" on ${actor.name}`);
-        try {
-          await effect.delete();
-          return true;
-        } catch (err) {
-          console.warn(`${TAG} | Failed to delete concentration effect on ${actor.name}:`, err);
-        }
-      }
+      if (matches) found.push(effect);
     }
-    console.log(`${TAG} | No matching concentration effect found on ${actor.name} for item ${item.name}`);
-    return false;
+    return found;
   }
 
   // ═══════════════════════════════════════════════════════════════

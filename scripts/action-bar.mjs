@@ -1162,7 +1162,6 @@ export class ActionBar {
 
       const combatant = game.combat?.combatants?.find(c => c.tokenId === token.id) ?? null;
       const isMyTurn  = !!combatant && game.combat?.combatant?.id === combatant.id;
-      const needsInit = !!combatant && combatant.initiative === null;
 
       // ⚠️🔴 SHRINK TO WHAT IS THERE, AND KEEP SLOT 1 WHERE IT WAS. Johnny,
       // 2026-09-03: "if we're not using the room, then why not shrink it? In
@@ -1293,9 +1292,8 @@ export class ActionBar {
             </div>
             <!-- The MULTI badge was here. It is a slot on the bar now, per
                  Johnny 2026-09-03: "I do not need it on the portrait." -->
-            ${combatant && !needsInit
-              ? `<div class="ace-qol-ab-init" data-tooltip="Initiative ${combatant.initiative}">${combatant.initiative}</div>`
-              : ""}
+            <!-- The yellow initiative number was here. Off the portrait, his call
+                 2026-10-14: "I do want those yellow numbers gone." -->
             <div class="ace-qol-ab-dice" data-tooltip="Left-click: roll initiative &nbsp;·&nbsp; Right-click: ability &amp; skill checks">
               <i class="fas fa-dice-d20"></i>
             </div>

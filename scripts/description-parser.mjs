@@ -12,6 +12,8 @@
 
 // Imports nothing itself, so this stays free of the module's import cycles.
 import { inlineRollsAsText } from "./inference/spell-text.mjs";
+// A leaf too: lookups answered from the item, the one way (2026-10-14).
+import { resolveLookups } from "./rules/creature-words.mjs";
 
 const MODULE_ID = "ace-qol";
 
@@ -55,7 +57,13 @@ export class DescriptionParser {
    * @returns {ParsedEffects}
    */
   static parse(item) {
-    const rawHtml = item?.system?.description?.value ?? "";
+    // ⚠️🔴 A LOOKUP IS PART OF THE SENTENCE (2026-09-19, and again 2026-10-14):
+    // the 2024 Ghast's Claw writes "Constitution Saving Throw: DC [[lookup
+    // @save.dc.value activity=…]]", so the DC was a blank here and the save was
+    // never read. ACE then offered the Claw's save as a second button beside its
+    // attack instead of asking it after the hit. Lookups are answered from the
+    // item by the one resolver (rules/creature-words.mjs) before anything else.
+    const rawHtml = resolveLookups(item?.system?.description?.value ?? "", { item });
     if (!rawHtml) return DescriptionParser._empty();
 
     // Keep the raw HTML for Foundry enriched text patterns ([[/save]], [[/damage]], etc.)
@@ -232,6 +240,34 @@ export class DescriptionParser {
           // Wasp Sting live-fire, 2026-07-10). Consumed by post-hit-saves.
           halfOnSuccess: /half\s+as\s+much\s+damage/i.test(afterText),
           perHit: lower.includes("must succeed") || lower.includes("target must"),
+          requiredCreatureType,
+        });
+      }
+    }
+
+    // ── 2024 heading: "Constitution Saving Throw: DC 11" (2026-10-14) ──
+    // The ability comes first and the DC after the colon, the layout of every
+    // 2024 stat block in dnd5e's own packs. The save is placed at its "DC", so
+    // the hit verdict reads the heading and the sentence before it, the way it
+    // already knew how to ("subjected to the following effect").
+    const headingPattern = /\b(strength|dexterity|constitution|intelligence|wisdom|charisma)\s+saving\s+throw\s*:\s*(DC)\s*(\d+)/gi;
+    while ((match = headingPattern.exec(text)) !== null) {
+      const abilityRaw = match[1].toLowerCase();
+      const dc = parseInt(match[3]);
+      const ability = ABILITY_MAP[abilityRaw];
+      if (ability && dc > 0 && !seen.has(`${ability}-${dc}`)) {
+        seen.add(`${ability}-${dc}`);
+        const at = match.index + match[0].search(/DC/i);
+        const afterText = text.slice(match.index + match[0].length, match.index + match[0].length + 300).toLowerCase();
+        const requiredCreatureType = DescriptionParser._detectCreatureTypeQualifier(text, match.index);
+        saves.push({
+          dc, ability,
+          abilityLabel: match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase(),
+          matchIndex: at,
+          ...DescriptionParser._hitSaveFields(text, at),
+          failEffect: DescriptionParser._parseFailEffect(afterText),
+          halfOnSuccess: /half\s+as\s+much\s+damage|success:\s*half/i.test(afterText),
+          perHit: /\bfailure\s*:/i.test(afterText) || lower.includes("target must"),
           requiredCreatureType,
         });
       }

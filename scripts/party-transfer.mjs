@@ -37,6 +37,8 @@ import { aceSnapToGrid, aceMarkFootprint, aceFootprintFree, aceTakenSquares }
   from "./geometry-utils.mjs";
 // One list owns where these buttons sit and what their number is.
 import { aceToolOrder } from "./token-tools-order.mjs";
+// A carried summon is not a dismissed one (rules/spell-tokens.mjs).
+import { removedBecause } from "./rules/spell-tokens.mjs";
 
 const HAND_KEY            = "partyHand";
 const TRANSIT_FOLDER_NAME = "ACE — In Transit";
@@ -758,7 +760,8 @@ export class PartyTransfer {
     await this._setHand(merged);
 
     try {
-      await scene.deleteEmbeddedDocuments("Token", entries.map(e => e.id));
+      await scene.deleteEmbeddedDocuments("Token", entries.map(e => e.id),
+        removedBecause("it is being carried to another scene"));
     } catch (err) {
       console.error(`${MODULE_ID} | Party Transfer — lift delete failed:`, err);
       ui.notifications?.error("ACE — Could not clear the tokens off the scene. They are recorded in the Hand; check the console.");
@@ -1709,7 +1712,8 @@ export class PartyTransfer {
         ).map(t => t.id);
       }
       if (!doomed.length) return;
-      await scene.deleteEmbeddedDocuments("Token", doomed);
+      await scene.deleteEmbeddedDocuments("Token", doomed,
+        removedBecause("the carried copy is taking its place"));
       console.debug(`${MODULE_ID} | Party Transfer — cleared ${doomed.length} existing copy/copies of "${entry.name}" from "${scene.name}"`);
     } catch (err) {
       console.warn(`${MODULE_ID} | Party Transfer — could not clear existing copies of "${entry.name}":`, err);

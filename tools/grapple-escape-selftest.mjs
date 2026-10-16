@@ -341,10 +341,13 @@ console.log("\nTHE TABLE HANDS THE WHOLE ROW OVER AT ONCE");
   const src = await import("node:fs").then(fs =>
     fs.readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/post-hit-saves.mjs", "utf8"));
   const at = src.indexOf("POST-HIT TABLE: applying");
-  const block = src.slice(at, at + 1800);
+  // Longer since 2026-10-12: a row with a size limit ("only if the target is
+  // Medium or smaller") can empty the row, so the collection is a `let` and the
+  // one landing call sits further down. The behaviour pinned here is unchanged.
+  const block = src.slice(at, at + 4000);
 
   check("the table collects the row's conditions before it lands any of them",
-    /const tableConditions = \(matchedEntry\.effects/.test(block)
+    /(?:const|let) tableConditions = \(matchedEntry\.effects/.test(block)
     && /\.filter\(fx => fx\.type === "condition"/.test(block),
     "one array for the whole row");
   check("and calls the lander ONCE with all of them",
@@ -410,9 +413,11 @@ console.log("\nTHE REGENERATION CARD, START OF TURN");
     "84px box, contain so nothing is cropped");
   check("the card has the ACE black background and its gold edge",
     /background: #1a1a1e/.test(block) && /border: 1px solid #d4af37/.test(block), "#1a1a1e / #d4af37");
-  check("the name and the timing are in the signature gold",
-    /\.ace-qol-ot-name \{[^}]*color: #d4af37/.test(block)
-    && /\.ace-qol-ot-timing \{[^}]*color: #d4af37/.test(block), "#d4af37");
+  // The header words are the bright header gold now (his table, 2026-10-14: "it
+  // should be a lot brighter yellow"), the gold every ACE header's words use.
+  check("the name and the timing are in the bright header gold",
+    /\.ace-qol-ot-name \{[^}]*color: #f5d060/.test(block)
+    && /\.ace-qol-ot-timing \{[^}]*color: #f5d060/.test(block), "#f5d060");
   check("\"Should regain\" is gold and the healing is green",
     /\.ace-qol-ot-dmg-detail \{[^}]*color: #d4af37/.test(block)
     && /\.ace-qol-ot-amount \{[^}]*color: #9bcc4a/.test(block), "gold text, green number");
